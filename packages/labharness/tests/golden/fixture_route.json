@@ -1,0 +1,60 @@
+{
+ "final_snapshot": {
+  "anomalies": [],
+  "dialog_active": false,
+  "extras": {
+   "dialog_text": "WELCOME",
+   "flags": {
+    "raw": 1,
+    "set": [
+     "pressed_a"
+    ]
+   },
+   "frame_counter": 1069,
+   "input_frames": 63,
+   "party": [
+    {
+     "hp": 0,
+     "level": 5,
+     "max_hp": 20,
+     "species": 1
+    },
+    {
+     "hp": 12,
+     "level": 3,
+     "max_hp": 12,
+     "species": 4
+    }
+   ]
+  },
+  "map_id": 2,
+  "milestones": 271,
+  "x": 4,
+  "y": 14
+ },
+ "manifest_sha256": "c51169f72287673ac79ce91599726717e250f9db7349c0be78b8d4224a62eed4",
+ "ram_sha256_per_step": [
+  "c4ca9d9343ea894cdd630d3302274a04d41ebae9c8901086747b8a925955b332",
+  "da4a898e3a82e4b5f5230205276d00a876c9ef81cc1c0cce274dfeb8db3c8262",
+  "9fab1aa4c15e8a83eda6660a800c7d47c5b16387f5da5593bc5623d80e97b155",
+  "e0dc35355a891aea1c70179774a3ab1e40b49de48f73be90f36b426916783a71",
+  "7805e9c1ac6e78b5bf873f1451adddcf70e2077a74e335dd92ecd938d4900cfe",
+  "020a5f8cbbbadab8ec1f9f9210c4a0e2d91445f459d1258143e78027a96754cd",
+  "89807287d2a42d1854b2a8fe4c1adda90fe2f9d002904dbb5c7d9376c1d8cbfe",
+  "2a756618bd08c4c995278e28f059c133f6457d10375109a1292a0d024a272644",
+  "18bf2734f7d9edaec400339ad84871ab8fcd1f512a864632a0297775c8ee3917",
+  "13761e37862d5407b8634375a7e6c9f47e2fe080dc7a13a3277b46a46937b92e",
+  "79a135f4a43b1b65c001b4540a4dd13a961ac99cccc48ffce4825edb0c679f73",
+  "96012b2f847a1307fd5588d19c6d1474649abef13ff0fe588b650aa7b1acc8ad",
+  "45cc72ed97ac5d8c1531ba5add13b5d60a43d0c3fe81ce2258aee76a98482326",
+  "27c9b7cc9b986a06062e74e6e4ca693d3242682847d6c69724ff5cb1d8fe64a9",
+  "0eb5470bb1fbd8e3377d84a2e9f508ab5f49036ad82f3bbe317a925e6969c6c5",
+  "388dcbd2ea41d2becb472c341f88cac9265e3bc5dd3131bba9126a8b37722414",
+  "62811216cfc8fbf9e35ebafc228c722904d3d7bb575cd524d97b0d5f537ad8a6",
+  "e60507ec1178fde307b497bf1b20b9fee9c9c41d753e956e5bd6eb4bb6880b0f"
+ ],
+ "score": 5,
+ "steps": 17,
+ "tiebreak_steps": 15,
+ "trace_sha256": "834657095fa59be115c4646784282eb21793f0dd51bdb641a808f0fef07ccfd0"
+}

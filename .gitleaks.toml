@@ -1,0 +1,8 @@
+title = "Memory Lab gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "dependency and build directories, not our source"
+paths = ['''(^|/)\.venv/''', '''(^|/)node_modules/''', '''(^|/)\.next/''']

@@ -1,0 +1,19 @@
+{
+  "fixture": true,
+  "game_id": "mlfixture",
+  "licence": "CC0-1.0",
+  "release_frames": 7,
+  "rom": {
+    "file": "fixture.gb",
+    "sha256": "eeaa3191d78fb13afa6d75cfe007391987cb98d09ca64fbf9eefcc9bf4bd0efd"
+  },
+  "start_state": {
+    "file": "fixture.state",
+    "pyboy_version": "2.9.0",
+    "sha256": "3369dc9aa6bc43067dfd8288f5c886d8ad15cac7c0386266a0b9dd975466cc40"
+  },
+  "state_map": {
+    "file": "fixture.statemap.json",
+    "sha256": "6c6ba31b96db883a9750acecf1406760bdfc7fe3477846d9ae76719c2ba4ca5b"
+  }
+}

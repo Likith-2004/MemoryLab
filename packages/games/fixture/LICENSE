@@ -1,0 +1,5 @@
+CC0 1.0 Universal -- https://creativecommons.org/publicdomain/zero/1.0/
+
+fixture.asm, build.sh and the files generated from them (fixture.gb, fixture.sym,
+fixture.state, fixture.statemap.json, bundle.json) were written for Memory Lab and are
+dedicated to the public domain under CC0 1.0.

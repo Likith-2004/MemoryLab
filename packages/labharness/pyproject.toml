@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "labharness"
+version = "0.1.0"
+description = "Memory Lab agent harness: deterministic emulator layer (Milestone 1)"
+requires-python = ">=3.12"
+dependencies = [
+    "pyboy==2.9.0",
+    "numpy>=2.0",
+    "pillow>=11",
+]
+
+[project.scripts]
+labharness = "labharness.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "hypothesis>=6", "ruff>=0.8", "mypy>=1.13"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/labharness"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = ["slow: long-running determinism/soak tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+
+[[tool.mypy.overrides]]
+module = ["pyboy", "pyboy.*"]
+ignore_missing_imports = true  # PyBoy ships no type stubs
