@@ -45,7 +45,7 @@ class Wait:
         if not _is_int(self.frames_to_wait) or not 1 <= self.frames_to_wait <= WAIT_FRAMES_MAX:
             raise InvalidAction(f"wait frames must be an int in 1..{WAIT_FRAMES_MAX}")
 
-    def cost(self, release_frames: int) -> int:  # noqa: ARG002 - same signature as Press.cost
+    def cost(self, release_frames: int) -> int:
         return self.frames_to_wait
 
 

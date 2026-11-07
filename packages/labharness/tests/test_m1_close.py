@@ -13,7 +13,6 @@ from pyboy.utils import WindowEvent
 
 from helpers import FIXTURE_DIR, read_sym, route
 from labharness import Emulator, Press, Wait, _worker
-from labharness.errors import EmulatorFailure
 from labharness.rom import inspect_rom
 from test_rom import make_rom
 
@@ -158,7 +157,7 @@ def test_input_before_the_boundary_would_be_visible(bundle) -> None:  # type: ig
 
 # ---- CLI ------------------------------------------------------------------------------
 def labharness(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([sys.executable, "-m", "labharness", *args], capture_output=True, text=True, timeout=180)
+    return subprocess.run([sys.executable, "-m", "labharness", *args], capture_output=True, text=True, timeout=180, check=False)
 
 
 @pytest.fixture()
@@ -179,7 +178,7 @@ def test_cli_run_matches_the_golden_trace(script: Path, tmp_path: Path) -> None:
     assert summary["trace_sha256"] == golden["trace_sha256"] and summary["score"] == 5
     full = json.loads(out.read_text())
     assert len(full["entries"]) == golden["steps"] + 1 and full["manifest"]["release_frames"] == 7
-    assert sorted(p.name for p in frames.iterdir())[0] == "0000000.png"
+    assert min(p.name for p in frames.iterdir()) == "0000000.png"
 
 
 @pytest.mark.parametrize(

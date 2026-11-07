@@ -1,5 +1,16 @@
 # Changelog
 
+Format per milestone: scope, changes, tests/evidence, deviations, tag.
+
+## M1-close: Milestone 1 close-out (branch `m1-close`)
+
+- `release_frames` per game in `bundle.json` (harness 0.2.0, semantics hash updated, golden regenerated; RAM digests per step unchanged).
+- Cartridge RAM banks included in the trace digest; probe ROM `probe_sram.gb`; PyBoy bank-slice quirk handled.
+- `labharness run` / `labharness calibrate` CLI (`python -m labharness`).
+- Tests: `tick()` ended (real QUIT + wrapped ticks), behavioural idle-frame boundary test (+ negative control), RAM-layout parsing, CLI success/failure paths.
+- Licence audit (THIRD_PARTY.md, scripts/licence_audit.py); SECURITY.md U-1..U-3; README notes; HANDOFF.md, BLOCKED.md.
+- Repo: uv workspace, Makefile (`make gate`), gitleaks.
+
 ## Milestone 1: headless emulator step loop and deterministic RAM state reader (branch `milestone-1-emulator`)
 
 Added `packages/labharness` (emulator layer only: no provider, memory service, or agent loop)

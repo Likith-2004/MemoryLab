@@ -3,8 +3,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from labharness import Press, Wait, parse_action
-from labharness.actions import action_to_dict
-from labharness.actions import checked_cost
+from labharness.actions import action_to_dict, checked_cost
 from labharness.constants import ACTION_FRAMES_MAX, BUTTONS
 from labharness.errors import InvalidAction
 

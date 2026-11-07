@@ -12,5 +12,5 @@ for dist in sorted(distributions(), key=lambda d: d.metadata["Name"].lower()):
     meta = dist.metadata
     expr = meta.get("License-Expression") or meta.get("License") or ""
     classifiers = [c.split("::")[-1].strip() for c in meta.get_all("Classifier") or [] if c.startswith("License")]
-    files = [str(f) for f in dist.files or [] if re.search(r"(LICENSE|COPYING)", str(f), re.I)]
+    files = [str(f) for f in dist.files or [] if re.search(r"(LICENSE|COPYING)", str(f), re.IGNORECASE)]
     print(f"{meta['Name']} {meta['Version']} | {expr[:70]!r} | {classifiers} | {len(files)} licence file(s)")
