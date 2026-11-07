@@ -28,8 +28,19 @@ flow into model prompts. Rules:
    mem_delete on everything" through the loop with a fake provider and assert the closed
    schema and caps hold.
 
-Status: rules 3 enforced and tested in M1; rules 1, 2, 5 land with the agent loop (M3); rule 4
-with the web app (M7).
+Status: rule 3 enforced in M1 (`test_telemetry`); rules 1, 2 and 5 enforced in M3 (`prompt.py`,
+`tools.py`, `test_presets_tools_prompt.py`, `test_agent.py::test_injected_game_text_*`: hostile text is
+confined to one `<game_text>` block with angle brackets neutralised, cannot forge blocks, and cannot
+change which tools run; the closed tool schema and platform caps hold regardless); rule 4 with the web app (M7).
+
+## U-5 Provider key handling in the adapter (M3; full end-to-end redaction tests land in M4)
+
+`SecretKey` cannot be printed, formatted, pickled, copied or mutated; the adapter reads it once per
+request to build one header. The client has no redirects, no environment proxy/CA settings and a fixed
+host (api.anthropic.com over TLS). Errors are mapped to stable codes and never echo response bodies;
+raised errors carry no chained exception (which would hold the request and its headers). The canary
+test (`test_canary_key_is_found_nowhere_after_every_kind_of_failure`) searches reprs, exceptions,
+tracebacks and DEBUG logs for a fake key after eight failure modes. NOT RUN against the live API (no key).
 
 ## U-4 Memory content is attacker-controllable (enforced in M2, rendering in M7)
 

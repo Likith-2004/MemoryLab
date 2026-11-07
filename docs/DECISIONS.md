@@ -59,6 +59,30 @@ Entry format for charter decisions: ID, context, options, choice, reason, how to
 
 **M2-9 Mutations are serialised with a lock** so caps stay exact if the agent loop and the dream worker (M8) ever share a store; tested with 8 concurrent writers.
 
+## M3 agent loop and provider adapter (2026-11-08)
+
+**M3-1 Direct HTTPS via httpx instead of the vendor SDK.** Options: `anthropic` SDK; raw httpx. Choice: raw httpx. Reason: full control over redirects (never followed), proxy/CA environment (ignored), exception chaining (so no request/headers ever ride on an error), response size, retry policy, and a much smaller dependency surface for a component that handles visitor keys. Cost: we track API shape changes ourselves. Reverse: implement `Provider` with the SDK; the interface is unchanged.
+
+**M3-2 Provider-neutral interface.** `Provider.step(ProviderRequest) -> ProviderResult` (plan: `step(messages, tools) -> ProviderResult{actions, summary, usage}`), with explicit system blocks, per-call timeout and output-token budget added to the request. Adapters convert to wire format; the loop knows no vendor.
+
+**M3-3 `tool_choice: {"type": "any"}`.** Every step must act. REVIEW: unverified with the newest models; text-only replies are tolerated (the step still counts) if a provider ignores it. Also unverified: prompt caching on the system block (harmless if ignored) and that `temperature` is omitted.
+
+**M3-4 Token accounting counts every reported token** (input + output + cache creation + cache read). Conservative for the cap; cost estimates (M6) will weight them. The token cap can be overshot by at most one model call (usage is only known afterwards); the output budget for each call shrinks to the remaining cap.
+
+**M3-5 A step is one model call.** It can contain several tool calls (cap 8 per step, a platform limit, not in the plan) and produces one observation; `Session.advance` + `Session.finish_step` split the old `execute`. A memory-only or text-only step still counts and is observed. Trace entries for loop steps record `{"batch": [...]}`.
+
+**M3-6 Cap semantics.** Checked before each model call and after each step: steps, tokens, wall (injectable clock; each provider call timeout is bounded by the wall time left), frames. A cap tripped mid-step lets the step finish (frame cap: remaining calls in that step are answered `not_executed`), then `cap.hit` -> `stopping` -> `capped`. User stop = `completed/user_stop`; provider or emulator errors = `failed`; `killed` is orchestrator-only. Unexpected exceptions are recorded (`error: internal`), the run is marked failed, and the exception is re-raised.
+
+**M3-7 Presets.** Four presets, version 1, texts written by us (no access to Anthropic's text) and labelled "adaptation: written by Memory Lab, not Anthropic's prompt". Each text is pinned by hash in tests; edits need a new version. `none` has empty text. The no-memory arm must use `none` (validated in `RunConfig`). Custom presets exist for Demo mode only (the API enforces the mode in M6). The system prompt = frozen base prompt (`base@1`, hash pinned) + preset text; pinned global notes go in a separate uncached system block.
+
+**M3-8 What the model sees.** Core state, extras (minus configured hidden ones) and game text inside `<game_text>`; milestones are hidden by default so the score is not in the prompt. Screenshots follow the screenshot policy and only the current turn carries an image. Rolling context keeps the last `context_steps` (default 8) steps in an API-valid structure.
+
+**M3-9 Detectors from events only.** Position loop (stuck streak 8; oscillation over 12), repeated failed action (4; failure = rejected or a lone press that changed nothing), memory/play ratio (window 20, >0.5), churn (delete within 10 steps of write), stale note read (**proxy**: note read on a different map than it was written on, not rewritten since; REVIEW: "contradicted by later state" has no exact event-only definition), cap rejections (3/10/25). Batch recomputation equals live detection (property test), which is how replay reproduces them.
+
+**M3-10 Event payloads.** `obs` carries the full snapshot plus a `changed` flag; `model.call` carries usage/latency/request id but no prompt text; `action` carries bounded printable args; `error` carries a stable code and a sanitised message. Redaction at the sink boundary lands in M4.
+
+**M3-11 Model allowlist** (`providers.registry`): claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5 on api.anthropic.com. The run gateway (M6) must call `check_model`.
+
 ## Open (not decided here)
 
 - Real public game and its RAM map (spec decision #1; Option A track).

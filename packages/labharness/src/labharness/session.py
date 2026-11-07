@@ -133,13 +133,30 @@ class Session:
     def execute(self, action: Action) -> StepRecord:
         """Run one action as one step. Raises StepLimitExceeded / FrameLimitExceeded
         before touching the emulator when a cap would be crossed."""
+        self._check_can_step()
+        frames = self.emulator.execute(action)
+        self.step += 1
+        return self._observe(self.step, frames, action_to_dict(action))
+
+    def advance(self, action: Action) -> int:
+        """Run one action inside a step that `finish_step` will close (agent loop: several
+        tool calls, then one observation). Returns the frames advanced."""
+        self._check_can_step()
+        return self.emulator.execute(action)
+
+    def finish_step(self, executed: list[dict[str, Any]]) -> StepRecord:
+        """Close a step: count it, then observe. `executed` lists what ran (possibly nothing:
+        a memory-only step still advances the step counter and gets an observation)."""
+        self._check_can_step()
+        self.step += 1
+        frames = sum(int(a.get("frames", 0)) for a in executed)
+        return self._observe(self.step, frames, {"batch": executed})
+
+    def _check_can_step(self) -> None:
         if not self._opened:
             raise EmulatorFailure("session is not open")
         if self.step >= self.limits.max_steps:
             raise StepLimitExceeded(f"step cap {self.limits.max_steps} reached")
-        frames = self.emulator.execute(action)
-        self.step += 1
-        return self._observe(self.step, frames, action_to_dict(action))
 
     def run_script(self, actions: Iterable[Action]) -> Trace:
         """Open the session, run every action, and return the full deterministic trace."""

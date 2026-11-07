@@ -5,7 +5,8 @@ Current state, updated at every milestone.
 ## State
 - Milestone 1 (emulator harness) and M1-close are implemented and tested. See CHANGELOG.md.
 - M2 memory service implemented and tested (`labharness.memory`).
-- Next: M3 agent loop and provider adapter.
+- M3 agent loop, Anthropic adapter (mock-tested only), presets, detectors implemented.
+- Next: M4 event log, manifest, replay, export, ingest, redaction.
 
 ## How to run
 ```bash

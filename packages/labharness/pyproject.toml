@@ -11,6 +11,7 @@ dependencies = [
     "pyboy==2.9.0",
     "numpy>=2.0",
     "pillow>=11",
+    "httpx>=0.27",
 ]
 
 [project.scripts]
@@ -30,6 +31,9 @@ markers = ["slow: long-running determinism/soak tests"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["RUF059", "RUF015"]  # unused unpacked values are normal in tests
 
 [tool.mypy]
 strict = true
