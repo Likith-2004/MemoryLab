@@ -39,6 +39,26 @@ Entry format for charter decisions: ID, context, options, choice, reason, how to
 
 **M1C-6 `tick()` ended is a typed worker error**; tested with PyBoy's real QUIT event and a wrapped `tick` at each phase (wait, hold, release).
 
+## M2 memory service (2026-11-08)
+
+**M2-1 Paths are accepted only in canonical form, never rewritten.** Context: the plan says paths are "normalised" with regex `[a-z0-9_\-/.]{1,120}`, depth <= 4, no `..`, no absolute paths. Options: silently rewrite (lowercase, collapse `//`, strip `./`), or reject. Choice: reject anything not already canonical, with an informative tool error. Reason: rewriting creates aliasing (`A` and `a`, `a//b` and `a/b`) and ambiguity in logs; rejecting is simpler to prove safe (property test against an independent reference implementation). Also rejected: empty, `.` and `..` segments (but `...` and `..a` are legal names; paths are only keys). Reverse: add a normalising step in `check_path`.
+
+**M2-2 Added `rev` (global per store) next to the per-path `version`; `mem.write` events carry the full `content`.** DEVIATION from the data-model and event-schema sections. Context: snapshots and checkpoints need one pointer into memory history, and the ingest service (M4) must rebuild `memory_files` rows from events; a diff alone cannot do that reliably. Choice: rows are `(run_id, path, version, step, rev, content, chars, deleted)`; `mem.write` data = path, version, step, rev, before/after sha256, chars, created, unified diff, content. Redaction (M4) applies to content and diff. Reverse: drop `rev`, point snapshots at a step, reconstruct from diffs.
+
+**M2-3 `mem_search` is case-insensitive substring only.** The plan allows "substring/BM25". BM25 adds ranking state for little benefit at <= 10 small files. Results ranked by match count then path, <= 20 results, 200-char snippets, query 1..200 chars. Reverse: add BM25 behind the same tool.
+
+**M2-4 `max_file_chars` <= 8192 so `mem_read` never truncates** (plan: "<= 8 KB returned"). A model that cannot read the rest of a file is worse off than with a lower cap. Defaults: per-file 4000, total 20000, files 10 (manifest example). Caps count characters, not bytes.
+
+**M2-5 History budget (added caps).** DEVIATION (additive). Every write keeps its version, so rows and characters retained are bounded: `max_history_rows` (5000) and `max_history_chars` (8M); writes beyond that are rejected with reason `history_cap`, logged as `mem.reject`. Reason: resource exhaustion; unbounded versioning could grow worker RAM with steps x tool calls x 8 KB. Reverse: raise or remove the limits in `MemoryConfig`.
+
+**M2-6 Content rules.** Opaque text stored verbatim. Rejected: non-strings, unpaired surrogates (cannot be encoded to UTF-8/JSONL), control characters other than tab/LF/CR, and DEL. Never interpreted, executed, used as a URL, tool name or path (tested with an XSS/injection payload corpus; rendering rules are enforced in M7).
+
+**M2-7 The live store is in worker memory; persistence is event-driven.** The worker has no DB credentials (plan). The ingest service builds `memory_files` from `mem.*` events (M4). No host disk is ever used (AST check on the modules' imports/calls plus a test that makes file opens raise).
+
+**M2-8 Error conventions.** Bad model input never raises: it becomes a `mem.reject` outcome with a stable reason (`invalid_path`, `invalid_content`, `invalid_args`, `unknown_tool`, `memory_disabled`, `path_conflict`, `files_cap`, `total_cap`, `file_cap`, `history_cap`, `not_found` for delete). Reading a missing file is a normal `mem.read` with `found: false`. Programmer errors (a step that goes backwards) raise `ValueError`. Identical rewrites still create a version (empty diff). A file cannot also be a folder (`path_conflict`).
+
+**M2-9 Mutations are serialised with a lock** so caps stay exact if the agent loop and the dream worker (M8) ever share a store; tested with 8 concurrent writers.
+
 ## Open (not decided here)
 
 - Real public game and its RAM map (spec decision #1; Option A track).

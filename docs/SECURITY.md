@@ -31,6 +31,15 @@ flow into model prompts. Rules:
 Status: rules 3 enforced and tested in M1; rules 1, 2, 5 land with the agent loop (M3); rule 4
 with the web app (M7).
 
+## U-4 Memory content is attacker-controllable (enforced in M2, rendering in M7)
+
+Memory files are written by the model, which a visitor or game text can steer. The service
+stores content verbatim as opaque text and never interprets it. Controls (tests in
+`test_memory*.py`): canonical-only paths (traversal is impossible by construction: paths are
+keys into rows and there is no host disk), closed tool arguments, hard caps with `mem.reject`
+events, control-character and surrogate rejection, search limited to the run's own store.
+Display: text nodes only, `text/plain` + `nosniff` on the API, strict CSP (M6/M7).
+
 ## U-2 Dependency attack surface
 
 `pysdl2-dll` bundles image/audio codec libraries that the null-window harness never uses
