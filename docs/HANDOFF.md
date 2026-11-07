@@ -6,7 +6,9 @@ Current state, updated at every milestone.
 - Milestone 1 (emulator harness) and M1-close are implemented and tested. See CHANGELOG.md.
 - M2 memory service implemented and tested (`labharness.memory`).
 - M3 agent loop, Anthropic adapter (mock-tested only), presets, detectors implemented.
-- Next: M4 event log, manifest, replay, export, ingest, redaction.
+- M4 `runlog` (events, lifecycle, redaction, store, segmented log, manifest, bundle, replay/verify, client sinks) and `services/ingest` implemented.
+- Python is pinned to 3.14 (stdlib zstd). Packages: `packages/labharness`, `packages/runlog`, `services/ingest`.
+- Next: M5 sandbox and orchestrator.
 
 ## How to run
 ```bash

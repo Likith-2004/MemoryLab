@@ -3,6 +3,16 @@ title = "Memory Lab gitleaks config"
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "dependency and build directories, not our source"
 paths = ['''(^|/)\.venv/''', '''(^|/)node_modules/''', '''(^|/)\.next/''']
+
+[[allowlists]]
+description = "deliberately fake credentials used as redaction/canary test fixtures (exact files only)"
+paths = [
+  '''packages/runlog/tests/test_redaction\.py''',
+  '''packages/runlog/tests/test_run_artifacts\.py''',
+  '''services/ingest/tests/test_canary\.py''',
+  '''services/ingest/tests/test_app\.py''',
+  '''packages/labharness/tests/test_provider_anthropic\.py''',
+]

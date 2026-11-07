@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ingest"
+version = "0.1.0"
+description = "Memory Lab ingest service: per-run-token event/frame/manifest writer"
+requires-python = ">=3.14"
+dependencies = ["runlog", "labharness", "fastapi>=0.115", "uvicorn>=0.30", "pillow>=11"]
+
+[tool.uv.sources]
+runlog = { workspace = true }
+labharness = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ingest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["RUF059", "RUF015"]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+plugins = ["pydantic.mypy"]

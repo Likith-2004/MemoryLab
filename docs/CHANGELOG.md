@@ -2,6 +2,16 @@
 
 Format per milestone: scope, changes, tests/evidence, deviations, tag.
 
+## M4: event log, manifest, replay, export, ingest, redaction (branch `m4-runlog`, tag `m4-done`)
+
+- `packages/runlog`: strict event model, run lifecycle state machine with writer roles, redaction (exact key + encodings + patterns), object store protocol + local implementation, zstd-segmented gapless event log with checksums and crash recovery, write-once sealed manifest, deterministic export bundle with credential scan, replay/verification (log integrity, detector recomputation, **re-execution of recorded actions against the emulator**), worker sinks (redacting, local, HTTP with idempotent batches).
+- `services/ingest` (FastAPI): per-run HMAC tokens, scope separation, quotas, body limits, frame validation, manifest sealing, close + export.
+- Loop changes: `action` events carry the validated action (enables re-execution), `content_filter` for memory writes, `frame_sink`.
+- Python pinned to 3.14.
+- Tests: 193 new (runlog 143, ingest 53 less overlap; gate total in HANDOFF); 12 deliberate mutations caught.
+- Found and fixed by tests: full-tail resume bug, base64-alignment redaction gap, events accepted after a final state, validation errors echoing input, chunked-body 413, verifier crash on malformed bundles.
+- Deviations: see DECISIONS M4-*.
+
 ## M3: agent loop and provider adapter (branch `m3-agent`, tag `m3-done`)
 
 - Provider interface (`providers.base`), Anthropic adapter over httpx (retries, backoff, error mapping, no redirects, canary-key tested), `SecretKey`, `FakeProvider`, provider/model allowlist.

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "runlog"
+version = "0.1.0"
+description = "Memory Lab run log: events, redaction, object store, manifest, export bundle, replay/verification"
+requires-python = ">=3.14"
+dependencies = ["labharness", "httpx>=0.27"]
+
+[tool.uv.sources]
+labharness = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/runlog"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["RUF059", "RUF015"]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+
+[[tool.mypy.overrides]]
+module = ["labharness.*"]
+follow_imports = "normal"

@@ -52,7 +52,7 @@ class Wait:
 Action = Press | Wait
 
 
-def checked_cost(action: "Action", release_frames: int) -> int:
+def checked_cost(action: Action, release_frames: int) -> int:
     """Total frames the action takes in a game with this release-frame count (<= 600)."""
     cost = action.cost(release_frames)
     if cost > ACTION_FRAMES_MAX:

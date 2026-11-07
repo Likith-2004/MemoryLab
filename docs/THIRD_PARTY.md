@@ -19,6 +19,10 @@ and acceptable for a hosted service; anything stronger (GPL/AGPL/SSPL/BUSL) is r
 | httpcore / h11 / anyio / idna | 1.0.9 / 0.16.0 / 4.16.0 / 3.20 | BSD-3-Clause / MIT / MIT / BSD-3-Clause | httpx dependencies. |
 | certifi | 2026.10.23 | MPL-2.0 | CA bundle (data file); weak copyleft, unmodified. |
 
+| fastapi / starlette / pydantic (+core, annotated-types, annotated-doc) | 0.162.2 / 1.10.0 / 2.14.3 | MIT / BSD-3-Clause / MIT | Ingest service and (M6) the public API. |
+| uvicorn / click | 0.54.0 / 8.5.1 | BSD-3-Clause | ASGI server for local runs. |
+| `compression.zstd` | Python 3.14 stdlib | PSF-2.0 | Event-log segment compression (no third-party zstd package). |
+
 ## Development-only dependencies (not shipped)
 
 | Component | Version | Licence |

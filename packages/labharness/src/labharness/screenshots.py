@@ -39,16 +39,16 @@ class ScreenshotPolicy:
         return False
 
 
-def scale_nearest(rgb: "np.ndarray[Any, Any]", scale: int) -> "np.ndarray[Any, Any]":
+def scale_nearest(rgb: np.ndarray[Any, Any], scale: int) -> np.ndarray[Any, Any]:
     return np.repeat(np.repeat(rgb, scale, axis=0), scale, axis=1)
 
 
-def encode_png(rgb: "np.ndarray[Any, Any]") -> bytes:
+def encode_png(rgb: np.ndarray[Any, Any]) -> bytes:
     buf = io.BytesIO()
     Image.fromarray(np.ascontiguousarray(rgb), "RGB").save(buf, format="PNG", compress_level=6, optimize=False)
     return buf.getvalue()
 
 
-def frame_sha256(rgb: "np.ndarray[Any, Any]") -> str:
+def frame_sha256(rgb: np.ndarray[Any, Any]) -> str:
     """Hash of the raw (unscaled) pixels, stable across PNG encoder versions."""
     return hashlib.sha256(np.ascontiguousarray(rgb).tobytes()).hexdigest()

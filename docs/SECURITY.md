@@ -51,6 +51,31 @@ keys into rows and there is no host disk), closed tool arguments, hard caps with
 events, control-character and surrogate rejection, search limited to the run's own store.
 Display: text nodes only, `text/plain` + `nosniff` on the API, strict CSP (M6/M7).
 
+## U-6 Key redaction and the canary test (M4)
+
+Layers: (1) worker: `Redactor` knows the exact key and its encodings (plain, JSON-escaped, URL, hex,
+reversed, base64 at any byte alignment, with the characters mixing in neighbours trimmed) plus
+known key patterns; it wraps the event sink and filters memory writes; (2) ingest: pattern-only
+scrub of every event (it does not know visitor keys); (3) export: the bundle builder scans every file
+and refuses to build if anything credential-like remains; (4) logs: `ScrubFilter`. The metric
+`redactor.hits` should stay near zero (any hit alerts, M10). Tests (`services/ingest/tests/test_canary.py`):
+a run whose model text, memory writes, provider errors, unknown tool names and invalid tool arguments
+all contain a fake key leaves it in no segment, manifest, bundle entry, repository row, request body or
+log line when the worker redacts; a pattern-shaped key is still scrubbed by ingest if the worker forgets;
+and a negative control shows a pattern-less key the worker did not redact IS stored (so the search is
+real). KNOWN LIMIT: a key with no recognisable shape that the worker fails to redact cannot be caught
+downstream; the worker-side exact-match layer is what protects those, plus the plan's advice to use a
+provider-side spend limit.
+
+## U-7 Ingest trust boundary (M4)
+
+Per-run HMAC tokens bind one run and one scope (worker or orchestrator); a token for run A is refused
+for run B (403) and unknown runs are 404; workers may write only worker states and event types, the
+orchestrator only `run.state`/`error`; the log enforces the lifecycle and refuses events after the final
+state; `seq` and `ts` are assigned by ingest, never by clients; batches are idempotent (`batch_no`) so
+retries cannot duplicate; byte/event/frame quotas and a hard body limit (413, also for chunked bodies)
+bound resource use; validation errors never echo input; internal errors return an opaque incident id.
+
 ## U-2 Dependency attack surface
 
 `pysdl2-dll` bundles image/audio codec libraries that the null-window harness never uses

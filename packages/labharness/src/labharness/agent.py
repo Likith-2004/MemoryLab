@@ -139,13 +139,15 @@ class AgentLoop:
         run_id: str,
         stop: threading.Event | None = None,
         clock: Callable[[], float] = time.monotonic,
+        content_filter: Callable[[str], str] | None = None,
+        frame_sink: Callable[[int, bytes], None] | None = None,
     ) -> None:
         if preset.ref != config.preset_ref:
             raise ValueError("preset does not match the run config")
         self.session, self.provider, self.config, self.preset, self.sink = session, provider, config, preset, sink
         self.stop = stop or threading.Event()
         self.clock = clock
-        self.memory = MemoryService(MemoryStore(run_id), config.memory)
+        self.memory = MemoryService(MemoryStore(run_id), config.memory, content_filter)
         self.context = ContextBuilder(config.caps.context_steps)
         self.detectors = DetectorSet()
         self.tools = all_tool_schemas(config.memory)
@@ -154,6 +156,7 @@ class AgentLoop:
         self._last_snapshot: Snapshot | None = None
         self._last_inject_sha: str | None = None
         self._entries: list[dict[str, Any]] = []
+        self._frame_sink = frame_sink  # (step, PNG bytes) for frames the screenshot policy captured
 
     # ---- events ---------------------------------------------------------------------------
     def _emit(self, type_: str, step: int, data: dict[str, Any]) -> None:
@@ -295,7 +298,7 @@ class AgentLoop:
             self._emit("action", step_no, {**base, "ok": False, "error": "frame_cap", "frames": 0})
             return ToolResultBlock(call.id, result_text({"ok": False, "error": "frame_cap"}), True)
         executed.append({**action_to_dict(action), "frames": frames})
-        self._emit("action", step_no, {**base, "ok": True, "frames": frames})
+        self._emit("action", step_no, {**base, "ok": True, "frames": frames, "action": action_to_dict(action)})
         return ToolResultBlock(call.id, result_text({"ok": True, "frames": frames}), False)
 
     # ---- observation -----------------------------------------------------------------------------------
@@ -311,6 +314,8 @@ class AgentLoop:
             "new_milestones": list(rec.new_milestones), "frame_sha256": rec.frame_sha256,
             "ram_sha256": rec.ram_sha256, "frames": rec.frames,
         })
+        if rec.frame_png is not None and self._frame_sink is not None:
+            self._frame_sink(rec.step, rec.frame_png)
         self.context.begin(format_observation(rec.step, snap, self.config.observation), rec.frame_png)
 
 
