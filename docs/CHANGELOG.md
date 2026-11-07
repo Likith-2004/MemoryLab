@@ -2,6 +2,12 @@
 
 Format per milestone: scope, changes, tests/evidence, deviations, tag.
 
+## M2: memory service (branch `m2-memory`, tag `m2-done`)
+
+- Versioned-row virtual filesystem (`labharness.memory`, `memory_paths`): five closed-schema tools, caps (files, per-file, total, history), `mem.read/write/delete/reject` events with full diff, copy-on-write snapshots by `rev`, forks, per-step tree view, version diff.
+- Tests: 87 (unit, hostile-input property tests against an independent reference, stateful model test with snapshot-immutability invariants, no-host-disk proof, 8-thread concurrency); 10 deliberate mutations all caught.
+- Deviations: M2-2 (rev + content in events), M2-5 (history budget). See DECISIONS.md.
+
 ## M1-close: Milestone 1 close-out (branch `m1-close`)
 
 - `release_frames` per game in `bundle.json` (harness 0.2.0, semantics hash updated, golden regenerated; RAM digests per step unchanged).
