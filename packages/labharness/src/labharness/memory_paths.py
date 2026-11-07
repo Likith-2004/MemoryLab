@@ -54,7 +54,7 @@ def check_content(content: object, max_chars: int) -> str:
     return content
 
 
-def conflicts(path: str, existing: "set[str] | frozenset[str]") -> str | None:
+def conflicts(path: str, existing: set[str] | frozenset[str]) -> str | None:
     """A file cannot also be a folder: return the clashing existing path, if any."""
     prefix = path + "/"
     for other in existing:

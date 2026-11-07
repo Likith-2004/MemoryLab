@@ -34,5 +34,5 @@ class ScoreTracker:
         return {"seen": self.seen, "first_step": {str(b): s for b, s in sorted(self.first_step.items())}}
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ScoreTracker":
+    def from_dict(cls, data: dict[str, Any]) -> ScoreTracker:
         return cls(int(data["seen"]), {int(b): int(s) for b, s in data["first_step"].items()})

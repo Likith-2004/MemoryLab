@@ -183,7 +183,7 @@ class Emulator:
             raise EmulatorFailure("bad digest reply")
         return digest
 
-    def frame_rgb(self) -> "np.ndarray[Any, Any]":
+    def frame_rgb(self) -> np.ndarray[Any, Any]:
         _, data = self._call({"cmd": "frame"})
         if len(data) != SCREEN_H * SCREEN_W * 3:
             self._kill()

@@ -179,7 +179,8 @@ def test_modules_have_no_filesystem_capable_imports_or_calls() -> None:
                 assert {a.name.split(".")[0] for a in node.names} <= allowed_imports, module.__name__
             elif isinstance(node, ast.ImportFrom):
                 root = (node.module or "").split(".")[0]
-                assert node.level == 1 or root in allowed_imports, (module.__name__, node.module)
+                pure_types = node.module == "collections.abc"  # abstract base classes only: no I/O
+                assert node.level == 1 or root in allowed_imports or pure_types, (module.__name__, node.module)
                 if node.level == 1:
                     assert node.module in {"memory_paths"}, node.module
             elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):

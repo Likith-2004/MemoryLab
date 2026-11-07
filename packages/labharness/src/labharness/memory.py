@@ -14,6 +14,7 @@ import difflib
 import hashlib
 import threading
 from bisect import bisect_right
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -161,7 +162,7 @@ class MemoryStore:
         with self._lock:
             return list(self._by_path.get(path, []))
 
-    def fork(self, rev: int, new_run_id: str) -> "MemoryStore":
+    def fork(self, rev: int, new_run_id: str) -> MemoryStore:
         """New store seeded with this store's rows up to `rev` (rows are shared, not copied)."""
         with self._lock:
             child = MemoryStore(new_run_id)
@@ -183,9 +184,13 @@ def _unified_diff(path: str, before: str, after: str) -> str:
 
 
 class MemoryService:
-    def __init__(self, store: MemoryStore, config: MemoryConfig) -> None:
+    def __init__(self, store: MemoryStore, config: MemoryConfig,
+                 content_filter: Callable[[str], str] | None = None) -> None:
         self.store = store
         self.config = config
+        # Applied to every written file before validation (the run's key redactor): a credential
+        # must never be stored in memory, even if the model somehow produced one.
+        self.content_filter = content_filter
 
     # ---- snapshots ------------------------------------------------------------------
     def snapshot(self) -> MemorySnapshot:
@@ -206,9 +211,9 @@ class MemoryService:
         return _unified_diff(path, a.content, b.content)
 
     @classmethod
-    def forked(cls, parent: "MemoryService", snapshot: MemorySnapshot, new_run_id: str,
-               config: MemoryConfig) -> "MemoryService":
-        return cls(parent.store.fork(snapshot.rev, new_run_id), config)
+    def forked(cls, parent: MemoryService, snapshot: MemorySnapshot, new_run_id: str,
+               config: MemoryConfig) -> MemoryService:
+        return cls(parent.store.fork(snapshot.rev, new_run_id), config, parent.content_filter)
 
     # ---- tools ----------------------------------------------------------------------
     def dispatch(self, tool: str, args: object, step: int) -> ToolOutcome:
@@ -290,7 +295,10 @@ class MemoryService:
     def _write(self, args: dict[str, Any], step: int) -> ToolOutcome:
         self._exact_args(args, {"path", "content"})
         path = check_path(args["path"])
-        content = check_content(args["content"], self.config.max_file_chars)
+        raw = args["content"]
+        content = self.content_filter(raw) if self.content_filter is not None and isinstance(raw, str) else raw
+        redacted = content != raw
+        content = check_content(content, self.config.max_file_chars)
         live = self.store.live()
         clash = conflicts(path, frozenset(live))
         if clash is not None:
@@ -309,6 +317,7 @@ class MemoryService:
             "before_sha256": _sha(before_text) if before else None, "after_sha256": row.sha256,
             "chars": row.chars, "created": before is None,
             "diff": _unified_diff(path, before_text, content), "content": content,
+            **({"redacted": True} if redacted else {}),
         })
         return ToolOutcome(True, {"ok": True, "path": path, "version": row.version, "chars": row.chars},
                            (event,))

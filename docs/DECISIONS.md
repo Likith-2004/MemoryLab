@@ -83,6 +83,32 @@ Entry format for charter decisions: ID, context, options, choice, reason, how to
 
 **M3-11 Model allowlist** (`providers.registry`): claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5 on api.anthropic.com. The run gateway (M6) must call `check_model`.
 
+## M4 run log, ingest, redaction (2026-11-08)
+
+**M4-1 Python 3.14 is the project's floor.** Context: the plan specifies `.jsonl.zst` segments. Options: add the `zstandard` package; use Python 3.14's stdlib `compression.zstd`. Choice: stdlib (no dependency); `.python-version` and `requires-python >= 3.14`. Reverse: depend on `zstandard` and relax the floor.
+
+**M4-2 Local-directory object store behind an `ObjectStore` protocol (DEVIATION from "S3-compatible store"), REVIEW.** No cloud accounts are allowed; the interface (put-once/overwrite, get, list, delete, append) matches what an S3/MinIO backend needs. Immutable keys use link-or-fail; the unsealed tail uses `append` (an S3 backend would emulate it with read-modify-write on a small tail object). Logged as BLOCKED B-2.
+
+**M4-3 Event log format.** One canonical JSON object per line `{seq, run_id, step, ts, type, data}`; `seq` and `ts` assigned by ingest (clients cannot supply them); segments sealed at 1000 events into `.jsonl.zst` with sha256 in `segments.json`; the tail stays `.jsonl`. Readers verify checksums, gaplessness, run id and re-validate every line; decompression is capped (80 MB per segment). A writer resumed after a crash seals a full tail and refuses a sealed copy that disagrees with its tail.
+
+**M4-4 Run lifecycle is enforced at ingest.** Transition table from the plan; the worker may write `running`, `session_boundary`, `dreaming`, `stopping`, `completed`, `capped`, `failed`; the orchestrator `queued`, `starting`, `failed`, `killed`. No event may follow a final state. Replay re-checks the same rules from the recorded log.
+
+**M4-5 Tokens.** `v1.<payload>.<hmac>`: run id + scope + expiry, HMAC-SHA256 with a service secret (>= 32 bytes) shared by the orchestrator and ingest. Stateless, so no token table; a run is revoked by closing it. The secret is a service secret, not a visitor key, and never enters the sandbox (only the minted token does). REVIEW: a rotation story (key id in the token) is needed before production.
+
+**M4-6 Idempotent batches.** Each batch carries `batch_no` (starting at 1, shared with the orchestrator's own batches); a repeat of the last batch is acknowledged with the same response; any other number is 409. Prevents duplication on retry without client-chosen sequence numbers.
+
+**M4-7 Redaction layers.** Worker `Redactor` (exact key + encodings + known patterns) wraps the sink and filters memory writes; ingest scrubs patterns; export refuses to build on a hit; logs are scrubbed. Documented limit: a pattern-less key the worker misses cannot be caught downstream (SECURITY U-6). `redactor.hits` is the alert metric.
+
+**M4-8 Export bundle.** Fixed entry names only (`manifest.json`, `events.jsonl`, `memory/final.json`, `memory/history.jsonl`, `score.json`, `bundle.json`, `frames/NNNNNNN.png`), no user-controlled names (no zip-slip on extraction), memory shipped as JSON rows rather than files, deterministic bytes (fixed timestamps, sorted entries, so identical runs give identical sha256), verified offline with `python -m runlog verify` (optionally re-executing the game).
+
+**M4-9 Verification by re-execution.** `action` events now carry the validated action; `runlog.replay.reexecute` replays them on a fresh emulator and compares every step's RAM digest and score to the recorded `obs`. This is the deterministic score re-check the plan's leaderboard verification needs (M9).
+
+**M4-10 Quotas.** Per run: 200k events, 256 MiB event data, 3000 frames (256 KiB each, RGB PNG <= 640x576), 100 events per batch, 1 MiB request bodies (413 up front on Content-Length and while streaming). Reverse: edit `Limits`.
+
+**M4-11 Frames are validated, not trusted.** PNG header and Pillow `verify()`, RGB only, bounded dimensions; the same step with different bytes is a 409.
+
+**M4-12 Run records live behind a `RunRepository` interface.** The in-memory implementation serves tests and development; the Postgres implementation comes with the API (M6), which owns run creation.
+
 ## Open (not decided here)
 
 - Real public game and its RAM map (spec decision #1; Option A track).

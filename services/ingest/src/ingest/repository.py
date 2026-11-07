@@ -1,0 +1,72 @@
+"""Run records the ingest service reads and updates. The Postgres implementation (M6) shares this
+interface; the in-memory one serves tests and local development."""
+
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+from runlog.eventlog import IndexEntry
+
+
+@dataclass
+class RunRecord:
+    run_id: str
+    status: str | None = None
+    next_batch_no: int = 1
+    event_count: int = 0
+    bytes_total: int = 0
+    frames: int = 0
+    tokens: int = 0
+    steps: int = 0
+    score: int = 0
+    closed: bool = False
+    manifest_sealed: bool = False
+    last_ack: dict[str, Any] | None = None
+    bundle_sha256: str | None = None
+
+
+class RunRepository(Protocol):
+    def get(self, run_id: str) -> RunRecord | None: ...
+    def lock(self, run_id: str) -> Any: ...
+    def save(self, record: RunRecord) -> None: ...
+    def add_index(self, run_id: str, entries: list[IndexEntry]) -> None: ...
+    def add_memory_rows(self, run_id: str, rows: list[dict[str, Any]]) -> None: ...
+
+
+@dataclass
+class InMemoryRunRepository:
+    runs: dict[str, RunRecord] = field(default_factory=dict)
+    index: dict[str, list[IndexEntry]] = field(default_factory=dict)
+    memory_rows: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    _locks: dict[str, threading.RLock] = field(default_factory=dict)
+    _guard: threading.Lock = field(default_factory=threading.Lock)
+
+    def register(self, run_id: str) -> RunRecord:
+        """The API/orchestrator creates the run row before any token is minted."""
+        self.runs[run_id] = RunRecord(run_id)
+        return self.runs[run_id]
+
+    def get(self, run_id: str) -> RunRecord | None:
+        record = self.runs.get(run_id)
+        return None if record is None else RunRecord(**record.__dict__)
+
+    @contextmanager
+    def _held(self, run_id: str) -> Iterator[None]:
+        with self._guard:
+            lock = self._locks.setdefault(run_id, threading.RLock())
+        with lock:
+            yield
+
+    def lock(self, run_id: str) -> Any:
+        return self._held(run_id)
+
+    def save(self, record: RunRecord) -> None:
+        self.runs[record.run_id] = RunRecord(**record.__dict__)
+
+    def add_index(self, run_id: str, entries: list[IndexEntry]) -> None:
+        self.index.setdefault(run_id, []).extend(entries)
+
+    def add_memory_rows(self, run_id: str, rows: list[dict[str, Any]]) -> None:
+        self.memory_rows.setdefault(run_id, []).extend(rows)

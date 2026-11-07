@@ -380,3 +380,15 @@ def test_press_and_wait_dataclasses_are_what_the_loop_executes(bundle) -> None: 
     assert result.trace.entries[1]["action"]["batch"] == [
         {**action_to_dict(Press(("Right", "Down"), 2)), "frames": 2 * (2 + 7)}, {**action_to_dict(Wait(3)), "frames": 3}]
     assert result.trace.entries[1]["frames"] == 21
+
+
+def test_captured_frames_are_handed_to_the_frame_sink(bundle) -> None:  # type: ignore[no-untyped-def]
+    got: list[tuple[int, bytes]] = []
+    config = cfg(max_steps=3)
+    sink = ListSink()
+    with Session(bundle, Limits(), config.screenshots) as s:
+        AgentLoop(s, FakeProvider([step(wait(1))] * 3), config, get_preset("general@1"), sink, run_id="r",
+                  frame_sink=lambda n, png: got.append((n, png))).run()
+    assert [n for n, _ in got] == [0] and got[0][1].startswith(b"\x89PNG")          # step 0 always; no change, k=5
+    sha = next(e.data["frame_sha256"] for e in sink.events if e.type == "obs" and e.step == 0)
+    assert sha is not None

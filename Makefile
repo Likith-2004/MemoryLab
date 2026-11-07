@@ -1,16 +1,17 @@
 # Local gate commands. Everything runs on this machine; nothing is deployed.
-PY := .venv/bin/python
+BIN := $(CURDIR)/.venv/bin
+PKGS := packages/labharness packages/runlog services/ingest
 
 .PHONY: sync test lint secrets gate
 sync:
 	uv sync --all-packages --all-groups
 
 test:
-	cd packages/labharness && ../../$(PY) -m pytest tests -q -p no:cacheprovider
+	@for p in $(PKGS); do echo "== test $$p"; (cd $$p && $(BIN)/python -m pytest tests -q -p no:cacheprovider) || exit 1; done
 
 lint:
-	.venv/bin/ruff check packages scripts
-	cd packages/labharness && ../../.venv/bin/mypy src
+	$(BIN)/ruff check packages services scripts
+	@for p in $(PKGS); do echo "== mypy $$p"; (cd $$p && $(BIN)/mypy src) || exit 1; done
 
 secrets:
 	gitleaks git --no-banner
