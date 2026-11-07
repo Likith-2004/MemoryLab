@@ -2,6 +2,15 @@
 
 Format per milestone: scope, changes, tests/evidence, deviations, tag.
 
+## M3: agent loop and provider adapter (branch `m3-agent`, tag `m3-done`)
+
+- Provider interface (`providers.base`), Anthropic adapter over httpx (retries, backoff, error mapping, no redirects, canary-key tested), `SecretKey`, `FakeProvider`, provider/model allowlist.
+- Agent loop with hard caps on steps, tokens (provider-reported usage), wall time and frames; user stop; detectors (position loop, failed actions, memory/play ratio, churn, stale-note read, cap rejections) computed from events; closed game tool schemas; memory tools absent in the no-memory arm.
+- Presets `none`, `general`, `failures_only`, `read_first_test_theories` (version 1, labelled adaptation, text hashes pinned); frozen base prompt; rolling context with API-valid structure.
+- Untrusted game text handling (SECURITY.md U-1, U-5).
+- Tests: 148 new (481 total in the gate): adapter 56, prompt/tools/presets 40, detectors and loop 52; all with the fake provider or a mock transport; 11 deliberate mutations caught.
+- NOT RUN: any live model call (BLOCKED.md B-1).
+
 ## M2: memory service (branch `m2-memory`, tag `m2-done`)
 
 - Versioned-row virtual filesystem (`labharness.memory`, `memory_paths`): five closed-schema tools, caps (files, per-file, total, history), `mem.read/write/delete/reject` events with full diff, copy-on-write snapshots by `rev`, forks, per-step tree view, version diff.
