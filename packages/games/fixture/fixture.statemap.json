@@ -1,0 +1,111 @@
+{
+  "core": {
+    "dialog_active": {
+      "addr": "0xC003",
+      "width": 1
+    },
+    "map_id": {
+      "addr": "0xC000",
+      "width": 1
+    },
+    "milestones": {
+      "addr": "0xC004",
+      "width": 2
+    },
+    "x": {
+      "addr": "0xC001",
+      "width": 1
+    },
+    "y": {
+      "addr": "0xC002",
+      "width": 1
+    }
+  },
+  "extras": {
+    "dialog_text": {
+      "addr": "0xC028",
+      "charmap": {
+        "0x7F": " ",
+        "0x80": "A",
+        "0x81": "B",
+        "0x82": "C",
+        "0x83": "D",
+        "0x84": "E",
+        "0x85": "F",
+        "0x86": "G",
+        "0x87": "H",
+        "0x88": "I",
+        "0x89": "J",
+        "0x8A": "K",
+        "0x8B": "L",
+        "0x8C": "M",
+        "0x8D": "N",
+        "0x8E": "O",
+        "0x8F": "P",
+        "0x90": "Q",
+        "0x91": "R",
+        "0x92": "S",
+        "0x93": "T",
+        "0x94": "U",
+        "0x95": "V",
+        "0x96": "W",
+        "0x97": "X",
+        "0x98": "Y",
+        "0x99": "Z"
+      },
+      "max_len": 16,
+      "terminator": 80,
+      "type": "text"
+    },
+    "flags": {
+      "addr": "0xC027",
+      "names": {
+        "0": "pressed_a"
+      },
+      "type": "bitfield",
+      "width": 1
+    },
+    "frame_counter": {
+      "addr": "0xC006",
+      "type": "uint",
+      "width": 2
+    },
+    "input_frames": {
+      "addr": "0xC00C",
+      "type": "uint",
+      "width": 2
+    },
+    "party": {
+      "base": "0xC00F",
+      "count": {
+        "addr": "0xC00E",
+        "width": 1
+      },
+      "count_max": 6,
+      "fields": {
+        "hp": {
+          "offset": 2,
+          "width": 1
+        },
+        "level": {
+          "offset": 1,
+          "width": 1
+        },
+        "max_hp": {
+          "offset": 3,
+          "width": 1
+        },
+        "species": {
+          "offset": 0,
+          "width": 1
+        }
+      },
+      "stride": 4,
+      "type": "struct_list"
+    }
+  },
+  "game_id": "mlfixture",
+  "rom_sha256": "eeaa3191d78fb13afa6d75cfe007391987cb98d09ca64fbf9eefcc9bf4bd0efd",
+  "schema": 1,
+  "state_map_version": 1
+}
