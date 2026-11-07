@@ -8,7 +8,6 @@ from .constants import (
     HOLD_FRAMES_MAX,
     HOLD_FRAMES_MIN,
     MAX_BUTTONS_PER_ACTION,
-    RELEASE_FRAMES,
     WAIT_FRAMES_MAX,
 )
 from .errors import InvalidAction
@@ -33,12 +32,9 @@ class Press:
                 raise InvalidAction("unknown button")
         if not _is_int(self.hold_frames) or not HOLD_FRAMES_MIN <= self.hold_frames <= HOLD_FRAMES_MAX:
             raise InvalidAction(f"hold_frames must be an int in {HOLD_FRAMES_MIN}..{HOLD_FRAMES_MAX}")
-        if self.frames > ACTION_FRAMES_MAX:
-            raise InvalidAction(f"action would take {self.frames} frames (max {ACTION_FRAMES_MAX})")
 
-    @property
-    def frames(self) -> int:
-        return len(self.buttons) * (self.hold_frames + RELEASE_FRAMES)
+    def cost(self, release_frames: int) -> int:
+        return len(self.buttons) * (self.hold_frames + release_frames)
 
 
 @dataclass(frozen=True)
@@ -49,12 +45,19 @@ class Wait:
         if not _is_int(self.frames_to_wait) or not 1 <= self.frames_to_wait <= WAIT_FRAMES_MAX:
             raise InvalidAction(f"wait frames must be an int in 1..{WAIT_FRAMES_MAX}")
 
-    @property
-    def frames(self) -> int:
+    def cost(self, release_frames: int) -> int:  # noqa: ARG002 - same signature as Press.cost
         return self.frames_to_wait
 
 
 Action = Press | Wait
+
+
+def checked_cost(action: "Action", release_frames: int) -> int:
+    """Total frames the action takes in a game with this release-frame count (<= 600)."""
+    cost = action.cost(release_frames)
+    if cost > ACTION_FRAMES_MAX:
+        raise InvalidAction(f"action would take {cost} frames (max {ACTION_FRAMES_MAX})")
+    return cost
 
 
 def parse_action(obj: object) -> Action:

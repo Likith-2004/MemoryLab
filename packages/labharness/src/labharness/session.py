@@ -11,7 +11,7 @@ from typing import Any, Self
 
 from .actions import Action, action_to_dict
 from .bundle import GameBundle
-from .constants import HARNESS_VERSION, RELEASE_FRAMES, canonical_json, semantics_sha256
+from .constants import HARNESS_VERSION, canonical_json, semantics_sha256
 from .emulator import Emulator, Limits
 from .errors import CheckpointError, EmulatorFailure, StepLimitExceeded
 from .score import ScoreTracker
@@ -85,7 +85,7 @@ class Session:
         self.bundle = bundle
         self.limits = limits or Limits()
         self.screenshots = screenshots or ScreenshotPolicy()
-        self.emulator = Emulator(bundle.rom, self.limits)
+        self.emulator = Emulator(bundle.rom, bundle.release_frames, self.limits)
         self.tracker = ScoreTracker()
         self.step = 0
         self._prev: Snapshot | None = None
@@ -113,8 +113,8 @@ class Session:
         b = self.bundle
         return {
             "harness_version": HARNESS_VERSION,
-            "semantics_sha256": semantics_sha256(),
-            "release_frames": RELEASE_FRAMES,
+            "semantics_sha256": semantics_sha256(b.release_frames),
+            "release_frames": b.release_frames,
             "pyboy_version": self.emulator.pyboy_version,
             "game": {"id": b.game_id, "rom_sha256": b.rom_info.sha256, "state_map_version": b.state_map.version,
                      "state_map_sha256": b.state_map.sha256, "fixture": b.is_fixture},
@@ -181,7 +181,7 @@ class Session:
             snapshot_sha256=self._prev.sha256(),
             ram_sha256=self.emulator.ram_digest(),
             rom_sha256=self.bundle.rom_info.sha256,
-            semantics_sha256=semantics_sha256(),
+            semantics_sha256=semantics_sha256(self.bundle.release_frames),
             pyboy_version=self.emulator.pyboy_version or "",
         )
 
@@ -191,7 +191,7 @@ class Session:
             raise CheckpointError("checkpoint state was modified")
         if cp.rom_sha256 != self.bundle.rom_info.sha256:
             raise CheckpointError("checkpoint is for a different ROM")
-        if cp.semantics_sha256 != semantics_sha256() or cp.pyboy_version != self.emulator.pyboy_version:
+        if cp.semantics_sha256 != semantics_sha256(self.bundle.release_frames) or cp.pyboy_version != self.emulator.pyboy_version:
             raise CheckpointError("checkpoint was made under different harness/emulator semantics")
         if not (0 <= cp.step <= self.limits.max_steps and 0 <= cp.frames <= self.limits.max_total_frames):
             raise CheckpointError("checkpoint step/frame counters exceed this session's caps")

@@ -3,7 +3,7 @@
 import hashlib
 import json
 
-HARNESS_VERSION = "0.1.0"
+HARNESS_VERSION = "0.2.0"
 PINNED_PYBOY = "2.9.0"
 
 # Button vocabulary matches the architecture's `press` tool.
@@ -15,10 +15,11 @@ HOLD_FRAMES_MAX = 60
 WAIT_FRAMES_MAX = 600
 ACTION_FRAMES_MAX = 600
 
-# Frames the button stays released after each press in a sequence. Measured on the test
-# fixture by labharness.calibration.measure_release_frames (smallest value for which
-# repeated presses of every direction each register exactly once); asserted by tests.
-RELEASE_FRAMES = 7
+# Release frames (the button stays released after each press in a sequence) are a per-game
+# value stored in bundle.json and measured with `labharness calibrate`; they are part of
+# the semantics hash. Bounds only are fixed here.
+RELEASE_FRAMES_MIN = 1  # 0 would leave the release event pending at the step boundary
+RELEASE_FRAMES_MAX = 60
 
 # Game-agnostic RAM regions a state map may read, and the regions hashed into traces.
 WRAM = (0xC000, 0xE000)
@@ -31,10 +32,9 @@ SEMANTICS = {
     "hold_frames": [HOLD_FRAMES_MIN, HOLD_FRAMES_MAX],
     "wait_frames_max": WAIT_FRAMES_MAX,
     "action_frames_max": ACTION_FRAMES_MAX,
-    "release_frames": RELEASE_FRAMES,
     "render": "last frame of each action",
     "game_seed": None,
-    "ram_digest_regions": [list(WRAM), list(HRAM)],
+    "ram_digest_regions": [list(WRAM), list(HRAM), "cartridge RAM banks (when present)"],
 }
 
 
@@ -43,5 +43,6 @@ def canonical_json(obj: object) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
 
 
-def semantics_sha256() -> str:
-    return hashlib.sha256(canonical_json(SEMANTICS)).hexdigest()
+def semantics_sha256(release_frames: int) -> str:
+    """Hash of every frozen rule, including the game's release-frame count."""
+    return hashlib.sha256(canonical_json({**SEMANTICS, "release_frames": release_frames})).hexdigest()

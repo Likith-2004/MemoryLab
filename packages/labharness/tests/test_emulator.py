@@ -8,7 +8,6 @@ from pyboy import PyBoy
 from helpers import FIXTURE_DIR, read_sym
 from labharness import Emulator, Limits, Press, Wait, _worker
 from labharness.calibration import measure_release_frames
-from labharness.constants import RELEASE_FRAMES
 from labharness.errors import EmulatorFailure, EmulatorTimeout, FrameLimitExceeded, RomError
 
 SYM = read_sym()
@@ -16,7 +15,7 @@ SYM = read_sym()
 
 @pytest.fixture()
 def emu(bundle):  # type: ignore[no-untyped-def]
-    with Emulator(bundle.rom) as e:
+    with Emulator(bundle.rom, bundle.release_frames) as e:
         e.load_state(bundle.start_state)
         yield e
 
@@ -28,7 +27,7 @@ def u16(e: Emulator, addr: int) -> int:
 # ---- initialisation and shutdown -------------------------------------------------
 def test_init_runs_in_a_separate_process_and_reports_pinned_version(bundle) -> None:  # type: ignore[no-untyped-def]
     import os
-    e = Emulator(bundle.rom)
+    e = Emulator(bundle.rom, bundle.release_frames)
     assert not e.alive
     e.start()
     try:
@@ -39,7 +38,7 @@ def test_init_runs_in_a_separate_process_and_reports_pinned_version(bundle) -> N
 
 
 def test_shutdown_is_idempotent_and_use_after_close_fails(bundle) -> None:  # type: ignore[no-untyped-def]
-    e = Emulator(bundle.rom)
+    e = Emulator(bundle.rom, bundle.release_frames)
     e.start()
     e.close()
     e.close()
@@ -50,13 +49,13 @@ def test_shutdown_is_idempotent_and_use_after_close_fails(bundle) -> None:  # ty
 
 
 def test_double_start_refused(bundle) -> None:  # type: ignore[no-untyped-def]
-    with Emulator(bundle.rom) as e, pytest.raises(EmulatorFailure):
+    with Emulator(bundle.rom, bundle.release_frames) as e, pytest.raises(EmulatorFailure):
         e.start()
 
 
 def test_context_manager_kills_child_on_exception(bundle) -> None:  # type: ignore[no-untyped-def]
     proc = None
-    with pytest.raises(RuntimeError), Emulator(bundle.rom) as e:
+    with pytest.raises(RuntimeError), Emulator(bundle.rom, bundle.release_frames) as e:
         proc = e._proc
         raise RuntimeError("boom")
     assert proc is not None and not proc.is_alive()
@@ -70,12 +69,12 @@ def test_rtc_cartridge_refused_at_construction() -> None:
         chk = (chk - b - 1) & 0xFF
     rom[0x14D] = chk
     with pytest.raises(RomError, match="RTC"):
-        Emulator(bytes(rom))
+        Emulator(bytes(rom), 7)
 
 
 def test_never_writes_beside_the_rom(bundle) -> None:  # type: ignore[no-untyped-def]
     before = sorted(p.name for p in FIXTURE_DIR.iterdir())
-    with Emulator(bundle.rom) as e:
+    with Emulator(bundle.rom, bundle.release_frames) as e:
         e.load_state(bundle.start_state)
         e.execute(Press(("A", "Start"), 3))
     assert sorted(p.name for p in FIXTURE_DIR.iterdir()) == before
@@ -94,7 +93,7 @@ def test_sequence_semantics_and_frame_accounting(emu: Emulator) -> None:
     f0 = u16(emu, SYM["wFrames"])
     start = emu.frames
     cost = emu.execute(Press(("Right", "Down", "A"), 3))
-    assert cost == 3 * (3 + RELEASE_FRAMES) == emu.frames - start
+    assert cost == 3 * (3 + emu.release_frames) == emu.frames - start
     assert u16(emu, SYM["wFrames"]) - f0 == cost                      # game saw exactly that many frames
     assert u16(emu, SYM["wInputFrames"]) == 9                          # 3 buttons x 3 held frames
     x, y = emu.read_ram([(SYM["wX"], 1)])[0], emu.read_ram([(SYM["wY"], 1)])[0]
@@ -104,7 +103,7 @@ def test_sequence_semantics_and_frame_accounting(emu: Emulator) -> None:
 def test_press_order_matters(bundle) -> None:  # type: ignore[no-untyped-def]
     """Buttons are a sequence, not a chord: Start then B ends closed, B then Start ends open."""
     dialog = SYM["wDialog"]
-    with Emulator(bundle.rom) as e:
+    with Emulator(bundle.rom, bundle.release_frames) as e:
         e.load_state(bundle.start_state)
         e.execute(Press(("Start", "B"), 1))
         assert e.read_ram([(dialog, 1)]) == b"\x00"
@@ -113,11 +112,12 @@ def test_press_order_matters(bundle) -> None:  # type: ignore[no-untyped-def]
         assert e.read_ram([(dialog, 1)]) == b"\x01"
 
 
-def test_release_constant_matches_measurement(bundle) -> None:  # type: ignore[no-untyped-def]
-    """RELEASE_FRAMES is frozen; re-measuring on the fixture must reproduce it."""
+def test_release_frames_match_measurement(bundle) -> None:  # type: ignore[no-untyped-def]
+    """bundle.json's release_frames must be what calibration measures on this game."""
     cal = measure_release_frames(bundle)
-    assert cal.release_frames == RELEASE_FRAMES
-    assert not cal.passes[RELEASE_FRAMES - 1] and all(cal.passes[r] for r in range(RELEASE_FRAMES, 21))
+    r = bundle.release_frames
+    assert cal.release_frames == r == 7
+    assert not cal.passes[r - 1] and all(cal.passes[x] for x in range(r, 21))
 
 
 def test_frames_do_not_advance_on_read_only_calls(emu: Emulator) -> None:
@@ -128,7 +128,7 @@ def test_frames_do_not_advance_on_read_only_calls(emu: Emulator) -> None:
 
 # ---- limits and failures ---------------------------------------------------------
 def test_frame_limit_stops_exactly_at_the_cap(bundle) -> None:  # type: ignore[no-untyped-def]
-    with Emulator(bundle.rom, Limits(max_total_frames=100)) as e:
+    with Emulator(bundle.rom, bundle.release_frames, Limits(max_total_frames=100)) as e:
         e.load_state(bundle.start_state)
         for _ in range(4):
             e.execute(Wait(25))
@@ -140,7 +140,7 @@ def test_frame_limit_stops_exactly_at_the_cap(bundle) -> None:  # type: ignore[n
 
 
 def test_frame_limit_checked_before_a_straddling_action(bundle) -> None:  # type: ignore[no-untyped-def]
-    with Emulator(bundle.rom, Limits(max_total_frames=30)) as e:
+    with Emulator(bundle.rom, bundle.release_frames, Limits(max_total_frames=30)) as e:
         e.load_state(bundle.start_state)
         e.execute(Wait(20))
         with pytest.raises(FrameLimitExceeded):
@@ -150,7 +150,7 @@ def test_frame_limit_checked_before_a_straddling_action(bundle) -> None:  # type
 
 
 def test_per_call_timeout_kills_the_child(bundle) -> None:  # type: ignore[no-untyped-def]
-    with Emulator(bundle.rom, Limits(call_timeout_s=0.001)) as e:
+    with Emulator(bundle.rom, bundle.release_frames, Limits(call_timeout_s=0.001)) as e:
         with pytest.raises(EmulatorTimeout):
             e.execute(Wait(600))
         assert not e.alive
@@ -189,7 +189,7 @@ def test_memory_limit_is_enforced_in_the_child(bundle) -> None:  # type: ignore[
         proc.join(10)
         if proc.is_alive():
             proc.kill()
-    with Emulator(bundle.rom, Limits(memory_limit_bytes=768 * 1024**2)) as e:  # the documented floor works
+    with Emulator(bundle.rom, bundle.release_frames, Limits(memory_limit_bytes=768 * 1024**2)) as e:  # the documented floor works
         e.load_state(bundle.start_state)
         e.execute(Wait(600))
 
@@ -203,7 +203,7 @@ def test_limits_validation() -> None:
 
 def test_hostile_read_requests_are_refused_by_the_child(emu: Emulator) -> None:
     for ranges in ([(0x0000, 16)], [(0x8000, 4)], [(0xDFFF, 2)], [(0xC000, 0x5000)]):
-        e2 = Emulator(emu._rom)
+        e2 = Emulator(emu._rom, emu.release_frames)
         e2.start()
         try:
             with pytest.raises(EmulatorFailure):
@@ -213,13 +213,13 @@ def test_hostile_read_requests_are_refused_by_the_child(emu: Emulator) -> None:
 
 
 def test_bad_save_state_payloads_fail_cleanly(bundle) -> None:  # type: ignore[no-untyped-def]
-    with Emulator(bundle.rom) as e:
+    with Emulator(bundle.rom, bundle.release_frames) as e:
         with pytest.raises(EmulatorFailure):
             e.load_state(b"")
         with pytest.raises(EmulatorFailure):
             e.load_state(b"\x00" * (17 * 1024 * 1024))
         e.load_state(bundle.start_state)  # sizes rejected before reaching the child; still usable
-    with Emulator(bundle.rom) as e:
+    with Emulator(bundle.rom, bundle.release_frames) as e:
         with pytest.raises(EmulatorFailure):
             e.load_state(b"not a save state" * 10)
         assert not e.alive  # corrupted state: emulator discarded, never reused
@@ -277,7 +277,7 @@ def test_worker_never_uses_delayed_input_apis() -> None:
 
 
 def test_release_must_be_positive(bundle) -> None:  # type: ignore[no-untyped-def]
-    with Emulator(bundle.rom) as e:
+    with Emulator(bundle.rom, bundle.release_frames) as e:
         e.load_state(bundle.start_state)
         with pytest.raises(EmulatorFailure, match="release"):
             e._call({"cmd": "press", "buttons": ["A"], "hold": 1, "release": 0})
@@ -301,7 +301,7 @@ def test_release_must_be_positive(bundle) -> None:  # type: ignore[no-untyped-de
     ],
 )
 def test_child_rejects_out_of_bounds_commands_even_from_the_parent(bundle, header: dict) -> None:  # type: ignore[no-untyped-def,type-arg]
-    with Emulator(bundle.rom) as e:
+    with Emulator(bundle.rom, bundle.release_frames) as e:
         e.load_state(bundle.start_state)
         with pytest.raises(EmulatorFailure):
             e._call(header)
@@ -311,7 +311,7 @@ def test_child_rejects_out_of_bounds_commands_even_from_the_parent(bundle, heade
 def test_cpu_limit_kills_the_child_without_hanging(bundle) -> None:  # type: ignore[no-untyped-def]
     import time
     t0 = time.monotonic()
-    with Emulator(bundle.rom, Limits(cpu_limit_s=3, max_total_frames=10**9, call_timeout_s=60)) as e:
+    with Emulator(bundle.rom, bundle.release_frames, Limits(cpu_limit_s=3, max_total_frames=10**9, call_timeout_s=60)) as e:
         e.load_state(bundle.start_state)
         with pytest.raises(EmulatorFailure):
             for _ in range(100_000):

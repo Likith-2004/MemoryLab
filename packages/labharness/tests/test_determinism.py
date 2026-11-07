@@ -82,7 +82,7 @@ def test_different_start_state_gives_different_trace(bundle, tmp_path) -> None: 
     import hashlib
 
     from labharness import Emulator
-    with Emulator(bundle.rom) as e:
+    with Emulator(bundle.rom, bundle.release_frames) as e:
         e.load_state(bundle.start_state)
         e.execute(Wait(1))                       # same game, one frame later
         shifted = e.save_state()

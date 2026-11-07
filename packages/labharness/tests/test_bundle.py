@@ -67,3 +67,20 @@ def test_state_map_for_other_rom_refused(copy: Path) -> None:
     edit(copy, lambda m: m["state_map"].update(sha256=hashlib.sha256(raw).hexdigest()))
     with pytest.raises(BundleError, match="different ROM"):
         load_bundle(copy)
+
+
+@pytest.mark.parametrize("value", [0, 61, -1, True, 7.0, "7", None])
+def test_release_frames_must_be_a_valid_int(copy: Path, value: object) -> None:
+    edit(copy, lambda m: m.update(release_frames=value))
+    with pytest.raises(BundleError, match="release_frames"):
+        load_bundle(copy)
+
+
+def test_release_frames_is_required(copy: Path) -> None:
+    edit(copy, lambda m: m.pop("release_frames"))
+    with pytest.raises(BundleError, match="release_frames"):
+        load_bundle(copy)
+
+
+def test_fixture_bundle_release_frames(bundle) -> None:  # type: ignore[no-untyped-def]
+    assert bundle.release_frames == 7

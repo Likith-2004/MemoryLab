@@ -10,4 +10,7 @@ trap 'rm -rf "$tmp"' EXIT
 "$RGBDS/rgbasm" -o "$tmp/fixture.o" "$here/fixture.asm"
 "$RGBDS/rgblink" -p 0xFF -n "$out/fixture.sym" -o "$out/fixture.gb" "$tmp/fixture.o"
 "$RGBDS/rgbfix" -v -p 0xFF -t MLFIXTURE -m 0x00 -r 0x00 "$out/fixture.gb"
-sha256sum "$out/fixture.gb"
+"$RGBDS/rgbasm" -o "$tmp/probe_sram.o" "$here/probe_sram.asm"
+"$RGBDS/rgblink" -p 0xFF -o "$out/probe_sram.gb" "$tmp/probe_sram.o"
+"$RGBDS/rgbfix" -v -p 0xFF -t MLPROBESRAM -m 0x1B -r 0x03 "$out/probe_sram.gb"
+sha256sum "$out/fixture.gb" "$out/probe_sram.gb"

@@ -1,7 +1,8 @@
 """Generate the fixture's state map, start state and bundle.json from fixture.gb/.sym.
 
 Addresses come from the symbol file produced by the ROM build, never typed by hand.
-Run:  .venv/bin/python tools/make_fixture_assets.py ../games/fixture
+Run:  .venv/bin/python tools/make_fixture_assets.py ../games/fixture [release_frames]
+release_frames defaults to the value already in bundle.json (measure it with `labharness calibrate`).
 """
 
 import hashlib
@@ -26,8 +27,10 @@ def read_sym(path: Path) -> dict[str, int]:
     return out
 
 
-def main(directory: str) -> None:
+def main(directory: str, release_frames: int | None = None) -> None:
     root = Path(directory)
+    if release_frames is None:
+        release_frames = json.loads((root / "bundle.json").read_text())["release_frames"]
     rom = (root / "fixture.gb").read_bytes()
     info = inspect_rom(rom)
     sym = read_sym(root / "fixture.sym")
@@ -73,7 +76,7 @@ def main(directory: str) -> None:
     (root / "fixture.statemap.json").write_bytes(sm_raw)
 
     marker = sym["wInitDone"]
-    with Emulator(rom) as emu:  # cold boot: the only place a start state is produced
+    with Emulator(rom, release_frames) as emu:  # cold boot: the only place a start state is produced
         for _ in range(100):
             emu.execute(Wait(10))
             if emu.read_ram([(marker, 1)]) == b"\xa5":
@@ -88,6 +91,7 @@ def main(directory: str) -> None:
         "game_id": "mlfixture",
         "fixture": True,
         "licence": "CC0-1.0",
+        "release_frames": release_frames,
         "rom": {"file": "fixture.gb", "sha256": info.sha256},
         "start_state": {
             "file": "fixture.state", "sha256": hashlib.sha256(state).hexdigest(), "pyboy_version": version("pyboy"),
@@ -99,4 +103,4 @@ def main(directory: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else None)

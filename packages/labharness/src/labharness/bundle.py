@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
 
-from .constants import PINNED_PYBOY
+from .constants import PINNED_PYBOY, RELEASE_FRAMES_MAX, RELEASE_FRAMES_MIN
 from .errors import BundleError
 from .rom import RomInfo, inspect_rom
 from .statemap import StateMap, parse_statemap
@@ -27,6 +27,7 @@ class GameBundle:
     start_state_sha256: str
     state_map: StateMap
     pyboy_version: str
+    release_frames: int
 
 
 def _read(root: Path, name: str, expected_sha: str, what: str) -> bytes:
@@ -56,8 +57,12 @@ def load_bundle(directory: str | Path) -> GameBundle:
         st_f, st_sha, st_pyboy = meta["start_state"]["file"], meta["start_state"]["sha256"], meta["start_state"]["pyboy_version"]
         sm_f, sm_sha = meta["state_map"]["file"], meta["state_map"]["sha256"]
         is_fixture = meta.get("fixture", False) is True
+        release_frames = meta["release_frames"]
     except (KeyError, TypeError) as exc:
         raise BundleError(f"bundle.json missing field: {exc}") from exc
+    if (isinstance(release_frames, bool) or not isinstance(release_frames, int)
+            or not RELEASE_FRAMES_MIN <= release_frames <= RELEASE_FRAMES_MAX):
+        raise BundleError(f"release_frames must be an int in {RELEASE_FRAMES_MIN}..{RELEASE_FRAMES_MAX}")
     for sha in (rom_sha, st_sha, sm_sha):
         if not isinstance(sha, str) or not _SHA.match(sha):
             raise BundleError("bundle.json: sha256 values must be 64 lowercase hex chars")
@@ -72,4 +77,4 @@ def load_bundle(directory: str | Path) -> GameBundle:
     installed = version("pyboy")
     if st_pyboy != installed or installed != PINNED_PYBOY:
         raise BundleError(f"start state made with pyboy {st_pyboy}; installed {installed}, pinned {PINNED_PYBOY}")
-    return GameBundle(game_id, licence, is_fixture, rom, rom_info, state, st_sha, state_map, st_pyboy)
+    return GameBundle(game_id, licence, is_fixture, rom, rom_info, state, st_sha, state_map, st_pyboy, release_frames)

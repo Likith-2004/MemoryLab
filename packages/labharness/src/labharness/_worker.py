@@ -110,10 +110,22 @@ class Core:
             out += bytes(self.pyboy.memory[start : start + length])
         return bytes(out)
 
-    def digest(self) -> str:
+    def digest(self, ram_banks: int, ram_bank_size: int) -> str:
+        """sha256 over WRAM, HRAM and every cartridge RAM bank (read directly, so it does not
+        depend on whether the game currently has RAM enabled)."""
+        if not (all(isinstance(v, int) and not isinstance(v, bool) for v in (ram_banks, ram_bank_size))
+                and 0 <= ram_banks <= 16 and 0 <= ram_bank_size <= 0x2000):
+            raise WorkerError("bad cartridge RAM layout")
         h = hashlib.sha256()
         for lo, hi in (WRAM, HRAM):
             h.update(bytes(self.pyboy.memory[lo:hi]))
+        for bank in range(ram_banks):
+            if ram_bank_size:
+                # PyBoy 2.9.0 rejects a bank slice that ends exactly at the bank size
+                # (`stop < 0x2000` check), so the last byte is read on its own.
+                last = 0xA000 + ram_bank_size - 1
+                h.update(bytes(self.pyboy.memory[bank, 0xA000:last]))
+                h.update(bytes([self.pyboy.memory[bank, last]]))
         return h.hexdigest()
 
     def frame(self) -> bytes:
@@ -142,7 +154,7 @@ def _dispatch(core: Core, header: dict[str, Any], payload: bytes) -> tuple[dict[
     if cmd == "read":
         return {}, core.read(header["ranges"])
     if cmd == "digest":
-        return {"sha256": core.digest()}, b""
+        return {"sha256": core.digest(header["ram_banks"], header["ram_bank_size"])}, b""
     if cmd == "frame":
         return {}, core.frame()
     if cmd == "save":

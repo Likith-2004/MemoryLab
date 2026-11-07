@@ -1,4 +1,4 @@
-"""Measure the release-frame constant on a bundle (used once to freeze RELEASE_FRAMES)."""
+"""Measure a game's release-frame count (stored as `release_frames` in its bundle.json)."""
 
 from dataclasses import dataclass
 
@@ -33,7 +33,7 @@ def measure_release_frames(bundle: GameBundle) -> Calibration:
         emu._call({"cmd": "press", "buttons": [button], "hold": 1, "release": release})
 
     passes: dict[int, bool] = {}
-    with Emulator(bundle.rom, Limits()) as emu:
+    with Emulator(bundle.rom, MIN_CANDIDATE, Limits()) as emu:
         for release in range(MIN_CANDIDATE, MAX_CANDIDATE + 1):
             ok = True
             for direction in DIRECTIONS:

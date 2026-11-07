@@ -16,8 +16,8 @@ import numpy as np
 
 from . import _wire
 from ._worker import main as _worker_main
-from .actions import Action, Press, Wait
-from .constants import PINNED_PYBOY, RELEASE_FRAMES
+from .actions import Action, Press, Wait, checked_cost
+from .constants import PINNED_PYBOY, RELEASE_FRAMES_MAX, RELEASE_FRAMES_MIN
 from .errors import EmulatorFailure, EmulatorTimeout, FrameLimitExceeded, HarnessError
 from .rom import RomInfo, inspect_rom
 
@@ -49,7 +49,10 @@ class Limits:
 class Emulator:
     """One emulator child. Not thread-safe; one caller at a time."""
 
-    def __init__(self, rom: bytes, limits: Limits | None = None) -> None:
+    def __init__(self, rom: bytes, release_frames: int, limits: Limits | None = None) -> None:
+        if isinstance(release_frames, bool) or not RELEASE_FRAMES_MIN <= release_frames <= RELEASE_FRAMES_MAX:
+            raise ValueError(f"release_frames must be in {RELEASE_FRAMES_MIN}..{RELEASE_FRAMES_MAX}")
+        self.release_frames = release_frames
         self.rom_info: RomInfo = inspect_rom(rom)  # refuses RTC carts and bad headers
         self._rom = rom
         self.limits = limits or Limits()
@@ -146,12 +149,12 @@ class Emulator:
     def execute(self, action: Action) -> int:
         """Run one validated action; returns frames advanced. The frame cap is checked
         before anything runs, so a run stops exactly at the limit."""
-        cost = action.frames
+        cost = checked_cost(action, self.release_frames)
         if self.frames + cost > self.limits.max_total_frames:
             raise FrameLimitExceeded(f"{self.frames}+{cost} frames exceeds {self.limits.max_total_frames}")
         if isinstance(action, Press):
             header, _ = self._call(
-                {"cmd": "press", "buttons": list(action.buttons), "hold": action.hold_frames, "release": RELEASE_FRAMES}
+                {"cmd": "press", "buttons": list(action.buttons), "hold": action.hold_frames, "release": self.release_frames}
             )
         elif isinstance(action, Wait):
             header, _ = self._call({"cmd": "wait", "frames": action.frames_to_wait})
@@ -171,7 +174,9 @@ class Emulator:
         return data
 
     def ram_digest(self) -> str:
-        header, _ = self._call({"cmd": "digest"})
+        header, _ = self._call(
+            {"cmd": "digest", "ram_banks": self.rom_info.ram_banks, "ram_bank_size": self.rom_info.ram_bank_size}
+        )
         digest = header.get("sha256")
         if not isinstance(digest, str) or len(digest) != 64:
             self._kill()
