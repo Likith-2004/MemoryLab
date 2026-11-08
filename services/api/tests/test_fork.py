@@ -301,3 +301,19 @@ def test_the_function_refuses_a_parent_checkpoint_the_caller_cannot_see(env: Env
         with pytest.raises(psycopg.errors.RaiseException, match="parent_checkpoint_invalid"):
             c.execute("select api_private.create_run_request('{}', %s, 'demo', 'private', 5, 100, 30, 'g', %s)",
                       ("c" * 64, secret_cp))
+
+
+def test_fork_is_disabled_by_default_and_costs_nothing(make_env: Any) -> None:
+    from api.settings import Settings
+    assert Settings(jwks_url="x").fork_enabled is False
+    env: Env = make_env(fork_enabled=False)
+    owner, game = env.user(), env.game()
+    run, cp = source(env, owner, game)
+    r = fork(env, owner, run, fork_body(cp))
+    assert (r.status_code, r.json()["code"]) == (422, "validation_failed") and "not available" in r.json()["title"]
+    assert env.keys.calls == [] and env.orch.submitted == []
+    assert env.admin.execute("select count(*) n from public.runs where owner_id = %s and id <> %s", (owner, run)).fetchone()["n"] == 0  # type: ignore[index]
+    from test_runs_create import body
+    for _ in range(5):                                            # no create quota was used by the refused forks
+        fork(env, owner, run, fork_body(cp))
+    assert env.client.post("/api/v1/runs", json=body(env, game), headers=bearer(owner)).status_code == 202

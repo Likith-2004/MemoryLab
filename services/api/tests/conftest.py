@@ -261,6 +261,7 @@ class Env:
 
 
 def make_settings(**kw: Any) -> Settings:
+    kw.setdefault("fork_enabled", True)           # the product default is off; the fork tests exercise the route
     return Settings(jwks_url="http://unused.invalid/jwks", db_url=API_DB_URL, issuer=None, **kw)
 
 

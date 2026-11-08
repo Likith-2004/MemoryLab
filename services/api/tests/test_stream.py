@@ -454,3 +454,50 @@ def test_the_ticket_value_is_never_logged(make_env: Any, caplog: pytest.LogCaptu
         ws.receive_json()
     rejected(env, ids["run"], tkt)
     assert tkt not in "\n".join(r.getMessage() for r in caplog.records)
+
+
+def test_resumes_are_limited_to_one_a_second_per_socket(make_env: Any) -> None:
+    env = env_ws(make_env)
+    ids = seed(env, "public")
+    events(env, ids["run"], 5)
+    with connect(env, ids["run"], ticket(env, ids["run"])) as ws:
+        for _ in range(5):                                                       # five within a second
+            ws.send_text(json.dumps({"t": "resume", "after_seq": 0}))
+        with pytest.raises(WebSocketDisconnect) as info:
+            for _ in range(500):
+                ws.receive_json()
+        assert info.value.code == 1008
+
+
+def test_a_second_resume_a_second_later_is_fine(make_env: Any) -> None:
+    import time
+    env = env_ws(make_env)
+    ids = seed(env, "public")
+    events(env, ids["run"], 3)
+    with connect(env, ids["run"], ticket(env, ids["run"])) as ws:
+        assert [next_event(ws)["seq"] for _ in range(3)] == [1, 2, 3]
+        ws.send_text(json.dumps({"t": "resume", "after_seq": 1}))
+        assert [next_event(ws)["seq"] for _ in range(2)] == [2, 3]
+        time.sleep(1.1)
+        ws.send_text(json.dumps({"t": "resume", "after_seq": 0}))
+        assert [next_event(ws)["seq"] for _ in range(3)] == [1, 2, 3]
+
+
+def test_a_resume_is_charged_to_the_viewers_read_limit(make_env: Any) -> None:
+    env: Env = make_env(allowed_origins=(ORIGIN,), ws_poll_s=0.03, ws_heartbeat_s=5.0, read_limit_per_min=5)
+    ids = seed(env, "public")
+    events(env, ids["run"], 2)
+    tkt = ticket(env, ids["run"], ids["other"])                                  # one read charged
+    for _ in range(4):
+        env.client.get("/api/v1/games", headers=bearer(ids["other"]))             # the rest of the minute's reads
+    assert env.client.get("/api/v1/games", headers=bearer(ids["other"])).status_code == 429
+    with connect(env, ids["run"], tkt) as ws:
+        ws.send_text(json.dumps({"t": "resume", "after_seq": 0}))
+        with pytest.raises(WebSocketDisconnect) as info:
+            for _ in range(100):
+                ws.receive_json()
+        assert info.value.code == 1008
+    other = ticket(env, ids["run"], ids["owner"])                                # another viewer has their own budget
+    with connect(env, ids["run"], other) as ws:
+        ws.send_text(json.dumps({"t": "resume", "after_seq": 1}))
+        assert next_event(ws)["seq"] in (1, 2)

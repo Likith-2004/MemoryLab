@@ -527,7 +527,10 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     def fork_run(user: Authed, run: Run, body: ForkIn, request: Request, conn: Sess) -> dict[str, Any]:
         """A new run that starts from one of this run's checkpoints, with its config changed by `config_patch`.
         The caller must be able to see the run; the checkpoint must belong to it (same 404 as a missing one); the
-        parent checkpoint is set here, never taken from the body."""
+        parent checkpoint is set here, never taken from the body. Disabled by default: the orchestrator would refuse the
+        submit after the quota and key check were spent."""
+        if not settings.fork_enabled:
+            raise ApiError(422, "validation_failed", "forking is not available yet")
         ip = _ip_hash(client_ip(request), salt)
         if body.caps is None:
             raise ApiError(422, "caps_required", "caps are required")
@@ -1017,7 +1020,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
             return
         try:
             await ws.accept()
-            await _serve_socket(ws, rid, redeemed[1])
+            await _serve_socket(ws, rid, redeemed[1], viewer)
         finally:
             sockets.release(rid, viewer)
 
@@ -1031,8 +1034,9 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
         except (IndexError, ValueError):
             return peer
 
-    async def _serve_socket(ws: WebSocket, rid: str, user_id: str | None) -> None:
+    async def _serve_socket(ws: WebSocket, rid: str, user_id: str | None, viewer: str) -> None:
         state = {"after": 0, "closing": False}
+        last_resume = [-1e9]
 
         async def push() -> None:
             last_beat = asyncio.get_running_loop().time()
@@ -1075,10 +1079,15 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
                     await ws.close(code=1009)
                     return
                 after = _resume(text)
-                if after is None:
+                now = asyncio.get_running_loop().time()
+                # a resume re-reads the log: at most one a second per socket, and each is a read charged to the
+                # viewer, so a socket cannot loop the log around the limit on /events
+                if (after is None or now - last_resume[0] < 1.0
+                        or not limiter.allow(("read", viewer), settings.read_limit_per_min, 60)):
                     state["closing"] = True
                     await ws.close(code=1008)
                     return
+                last_resume[0] = now
                 state["after"] = after
 
         pusher = asyncio.create_task(push())
