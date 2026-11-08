@@ -163,3 +163,18 @@ def test_the_reaper_acts_as_service_role_only(seed: Seed) -> None:
         r.close()
         seed.conn.execute("revoke service_role from reaper_probe")
         seed.conn.execute("drop role reaper_probe")
+
+
+def test_a_scrubbing_log_handler_does_not_break_a_pass(seed: Seed, reaper: Reaper) -> None:
+    """Regression: ScrubFilter used to str() every log argument, so `%d` raised once a worker test had installed it."""
+    import logging
+
+    from runlog.redaction import ScrubFilter
+    handler = logging.StreamHandler()
+    handler.addFilter(ScrubFilter())
+    logging.getLogger().addHandler(handler)
+    try:
+        run = seed.run("queued", 20)
+        assert run in reaper.run_once()
+    finally:
+        logging.getLogger().removeHandler(handler)

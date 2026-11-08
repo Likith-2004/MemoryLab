@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,3 +58,22 @@ def env(tmp_path, monkeypatch) -> Env:  # type: ignore[no-untyped-def]
     store = LocalObjectStore(tmp_path / "objects")
     service = IngestService(repo, store, SECRET, clock=lambda: 1_000_000.0)
     return Env(repo, store, TestClient(create_app(service), raise_server_exceptions=False))
+
+
+@pytest.fixture(autouse=True)
+def restore_root_logging() -> Any:
+    """`worker.main` configures the root logger (basicConfig + a ScrubFilter on its handlers). That must not leak
+    into other tests in the same process."""
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    filters = {h: list(h.filters) for h in handlers}
+    yield
+    for h in list(root.handlers):
+        if h not in handlers:
+            root.removeHandler(h)
+            h.close()
+    for h in handlers:
+        h.filters[:] = filters[h]
+        if h not in root.handlers:
+            root.addHandler(h)
+    root.setLevel(level)
