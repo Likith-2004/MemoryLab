@@ -114,3 +114,18 @@ def test_garbage_and_oversized_output_is_dropped_never_trusted() -> None:
 def test_fatal_is_a_type_name_only() -> None:
     r = sandbox(FakeProcess([b'{"fatal":"RuntimeError"}\n'], 1, run_for=0.1))[0].run()
     assert (r.fatal, r.exit_code) == ("RuntimeError", 1)
+
+
+def test_a_sandbox_that_stops_heartbeating_is_killed_within_the_timeout_on_the_real_clock() -> None:
+    import threading
+    timeout = 0.3
+    proc = FakeProcess([hb(1)], hang=True)
+    sb, kills = sandbox(proc, wall=100.0, heartbeat_timeout_s=timeout, startup_grace_s=100.0)
+    t = threading.Thread(target=sb.run, daemon=True)               # a missing check must fail the test, not hang it
+    started = time.monotonic()
+    t.start()
+    t.join(timeout + 0.5)
+    elapsed = time.monotonic() - started
+    proc.killed = True                                              # release the thread if the check was absent
+    assert not t.is_alive() and elapsed >= timeout, "sandbox was not killed within heartbeat_timeout_s"
+    assert sb.result.killed_reason == "heartbeat_timeout" and kills

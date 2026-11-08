@@ -8,6 +8,7 @@ Format per milestone: scope, changes, tests/evidence, deviations, tag.
 - Ingest: per-scope batch numbering, status endpoint, auth before body parsing.
 - Tests: real-container probes (hardening, no egress, no key in inspect/top/environ, pids/memory limits, heartbeat kill). DEVIATION: Docker, not gVisor (M5-1).
 - NOT RUN: gVisor; real provider egress.
+- Provenance: a prior session ended without a state note and left 24 uncommitted files (modified docs, labharness agent/provider, ingest, Makefile, lockfile, plus the new egressproxy, worker, orchestrator and infra trees). They were reviewed and committed as M5 work. The review found `elif False:` in place of the heartbeat-timeout check in `orchestrator/sandbox.py`; it was restored and a real-clock regression test added (fails when the check is stubbed out).
 
 ## M4: event log, manifest, replay, export, ingest, redaction (branch `m4-runlog`, tag `m4-done`)
 

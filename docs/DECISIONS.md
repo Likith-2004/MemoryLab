@@ -129,6 +129,12 @@ Entry format for charter decisions: ID, context, options, choice, reason, how to
 
 **M5-9 Docker hygiene.** All objects are labelled/named `memorylab`; cleanup acts only on exact container names built from a validated run id (another project's names are refused). The daemon on this machine hosts other projects; none were touched.
 
+**M5-10 Heartbeat-timeout regression.** `test_a_sandbox_that_stops_heartbeating_is_killed_within_the_timeout_on_the_real_clock` runs the supervisor in a thread with a join deadline, so a missing check fails rather than hangs. Verified by stubbing the check (`elif False:`): it and the fake-clock test fail; restored, all pass.
+
+**Process: local, reversible installs are within the charter** (owner instruction). They are decided without asking and logged here.
+
+**M6-0 Supabase CLI installed locally** (`~/.local/bin/supabase`, user-level, no sudo) to run the local Supabase stack in Docker. RLS tests need `auth.uid()`, so M6 is not built on plain Postgres.
+
 ## Open (not decided here)
 
 - Real public game and its RAM map (spec decision #1; Option A track).
