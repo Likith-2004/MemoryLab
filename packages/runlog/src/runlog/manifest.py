@@ -11,6 +11,7 @@ from labharness.bundle import GameBundle
 from labharness.constants import canonical_json, semantics_sha256
 from labharness.presets import Preset
 from labharness.prompt import BASE_PROMPT_SHA256, BASE_PROMPT_VERSION
+from labharness.sessions import DREAM_PROMPT_SHA256, DREAM_PROMPT_VERSION
 
 from .store import AlreadyExists, ObjectStore
 
@@ -29,6 +30,17 @@ def harness_source_sha256() -> str:
         h.update(path.read_bytes())
         h.update(b"\0")
     return h.hexdigest()
+
+
+def _sessions_block(c: RunConfig) -> dict[str, Any]:
+    """The manifest's `sessions` block. With sessions off it is the same two-key block as before (so default manifests are unchanged)."""
+    if c.sessions.is_default:
+        return {"session_len": None, "dream": False}
+    block: dict[str, Any] = {"session_len": c.sessions.session_len, "dream": c.sessions.dream, "checkpoint_every": c.sessions.checkpoint_every}
+    if c.sessions.dream:
+        block.update({"dream_max_tokens": c.sessions.dream_max_tokens, "dream_max_turns": c.sessions.dream_max_turns,
+                      "dream_prompt": {"version": DREAM_PROMPT_VERSION, "sha256": DREAM_PROMPT_SHA256}})
+    return block
 
 
 def build_manifest(*, run_id: str, config: RunConfig, bundle: GameBundle, preset: Preset, pyboy_version: str,
@@ -58,7 +70,7 @@ def build_manifest(*, run_id: str, config: RunConfig, bundle: GameBundle, preset
                    "max_file_chars": c.memory.max_file_chars, "max_total_chars": c.memory.max_total_chars,
                    "max_history_rows": c.memory.max_history_rows, "max_history_chars": c.memory.max_history_chars,
                    "inject_path": c.inject_path, "inject_cap_chars": c.inject_cap_chars},
-        "sessions": sessions or {"session_len": None, "dream": False},
+        "sessions": sessions or _sessions_block(c),
         "observation": {"screenshot_policy": c.screenshots.mode, "k": c.screenshots.k,
                         "frame_scale": c.screenshots.frame_scale, "hide_extras": list(c.observation.hide_extras),
                         "show_milestones": c.observation.show_milestones},

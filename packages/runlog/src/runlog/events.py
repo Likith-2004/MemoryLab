@@ -8,8 +8,14 @@ from typing import Any
 
 EVENT_TYPES = frozenset({
     "run.state", "obs", "model.call", "model.summary", "action", "mem.read", "mem.write", "mem.delete",
-    "mem.reject", "session.boundary", "checkpoint", "detector", "cap.hit", "error",
+    "mem.reject", "session.boundary", "checkpoint", "detector", "cap.hit", "error", "fork.start",
 })
+# Memory mutations: the agent's own (`mem.*`) and the dream job's (`dream.*`). Both are rows in the same versioned store, so version and
+# rev run consecutively across them; metrics about the AGENT's memory behaviour must use the first set only.
+AGENT_MEM_WRITE, AGENT_MEM_DELETE = "mem.write", "mem.delete"
+DREAM_MEM_WRITE, DREAM_MEM_DELETE = "dream.write", "dream.delete"
+MEM_WRITE_TYPES = frozenset({AGENT_MEM_WRITE, DREAM_MEM_WRITE})
+MEM_DELETE_TYPES = frozenset({AGENT_MEM_DELETE, DREAM_MEM_DELETE})
 _DREAM = re.compile(r"dream\.[a-z_]{1,24}")
 RUN_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 MAX_EVENT_BYTES = 64 * 1024

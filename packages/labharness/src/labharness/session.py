@@ -100,6 +100,14 @@ class Session:
         self._opened = True
         return self._observe(0, 0, None)
 
+    def open_from(self, cp: Checkpoint, *, force_frame: bool = False) -> StepRecord:
+        """Start the emulator and resume from a checkpoint (instead of the start state); observes the restored step. `force_frame`
+        renders the screenshot even if the policy would not (the parent's prompt at that step had one)."""
+        self.emulator.start()
+        self._opened = True
+        self.restore(cp)
+        return self._observe(cp.step, 0, None, force_frame=force_frame)
+
     def close(self) -> None:
         self.emulator.close()
 
@@ -170,13 +178,13 @@ class Session:
             self.tracker.tiebreak_steps,
         )
 
-    def _observe(self, step: int, frames: int, action: dict[str, Any] | None) -> StepRecord:
+    def _observe(self, step: int, frames: int, action: dict[str, Any] | None, *, force_frame: bool = False) -> StepRecord:
         sm = self.bundle.state_map
         snapshot = parse_snapshot(sm, RamView(self._ranges, self.emulator.read_ram(self._ranges)))
         digest = self.emulator.ram_digest()
         new = self.tracker.update(step, snapshot.milestones)
         png = fsha = None
-        if self.screenshots.should_capture(step, self._prev, snapshot):
+        if force_frame or self.screenshots.should_capture(step, self._prev, snapshot):
             rgb = self.emulator.frame_rgb()
             fsha = frame_sha256(rgb)
             png = encode_png(scale_nearest(rgb, self.screenshots.frame_scale))

@@ -15,7 +15,7 @@ from labharness.errors import HarnessError
 from labharness.session import Session
 from labharness.tools import action_from_call
 
-from .events import Event, EventRejected
+from .events import MEM_DELETE_TYPES, MEM_WRITE_TYPES, Event, EventRejected
 from .lifecycle import FINAL, check_transition
 
 
@@ -53,7 +53,7 @@ def verify_log(events: Sequence[Event]) -> list[str]:
             if e.step < last_obs_step:
                 problems.append(f"obs step goes backwards at seq {e.seq}")
             last_obs_step = e.step
-        if e.type in ("mem.write", "mem.delete"):
+        if e.type in MEM_WRITE_TYPES | MEM_DELETE_TYPES:
             path, version, rev = e.data.get("path"), e.data.get("version"), e.data.get("rev")
             if not isinstance(path, str) or version != versions.get(path, 0) + 1:
                 problems.append(f"memory version for {str(path)[:40]} not consecutive at seq {e.seq}")
@@ -79,8 +79,12 @@ def compute_score(events: Sequence[Event]) -> dict[str, Any]:
     tiebreak = step of the last milestone first reached."""
     seen = 0
     first_step: dict[int, int] = {}
-    steps = tokens = 0
+    steps = tokens = memory_ops = dream_ops = 0
     for e in events:
+        if e.type in ("mem.write", "mem.delete"):
+            memory_ops += 1        # the agent's own changes; the dream job's are counted apart so a dreaming arm does not look like a writier agent
+        elif e.type in ("dream.write", "dream.delete"):
+            dream_ops += 1
         if e.type == "obs":
             mask = e.data["snapshot"]["milestones"]
             for bit in range(mask.bit_length()):
@@ -88,22 +92,22 @@ def compute_score(events: Sequence[Event]) -> dict[str, Any]:
                     first_step[bit] = e.step
             seen |= mask
             steps = max(steps, e.step)
-        elif e.type == "model.call":
+        elif e.type in ("model.call", "dream.call"):
             tokens = e.data["tokens_total"]
     state, reason = final_state(events)
     return {"progress_score": seen.bit_count(), "milestones_mask": seen, "tiebreak_steps": max(first_step.values(), default=0),
             "first_step": {str(b): s for b, s in sorted(first_step.items())}, "steps": steps, "tokens": tokens,
-            "final_state": state, "end_reason": reason}
+            "memory_ops": memory_ops, "dream_ops": dream_ops, "final_state": state, "end_reason": reason}
 
 
 def memory_rows(events: Sequence[Event]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for e in events:
-        if e.type == "mem.write":
+        if e.type in MEM_WRITE_TYPES:
             d = e.data
             rows.append({"path": d["path"], "version": d["version"], "step": d["step"], "rev": d["rev"],
                          "content": d["content"], "chars": d["chars"], "deleted": False, "sha256": d["after_sha256"]})
-        elif e.type == "mem.delete":
+        elif e.type in MEM_DELETE_TYPES:
             d = e.data
             rows.append({"path": d["path"], "version": d["version"], "step": d["step"], "rev": d["rev"],
                          "content": "", "chars": 0, "deleted": True, "sha256": None})

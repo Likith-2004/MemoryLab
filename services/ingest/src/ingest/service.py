@@ -11,7 +11,7 @@ from typing import Any
 from PIL import Image, UnidentifiedImageError
 from runlog.bundle import ExportRefused, build_export
 from runlog.eventlog import EventLogWriter
-from runlog.events import EventRejected, validate_payload
+from runlog.events import MEM_DELETE_TYPES, MEM_WRITE_TYPES, EventRejected, validate_payload
 from runlog.lifecycle import FINAL, check_transition
 from runlog.manifest import ManifestSealed, seal_manifest
 from runlog.redaction import Redactor, scan_text
@@ -144,7 +144,7 @@ class IngestService:
                 raise QuotaExceeded("byte quota for this run is used up")
             written, index = self._writer(run_id).append(items)
             for e in written:
-                if e.type == "model.call":
+                if e.type in ("model.call", "dream.call"):          # the dream job's spend counts against the run's total
                     record.tokens = int(e.data.get("tokens_total", record.tokens))
                 elif e.type == "obs":
                     record.steps = max(record.steps, e.step)
@@ -166,11 +166,11 @@ class IngestService:
     def _memory_rows(run_id: str, events: list[Any]) -> list[dict[str, Any]]:
         rows = []
         for e in events:
-            if e.type == "mem.write":
+            if e.type in MEM_WRITE_TYPES:                           # the agent's writes and the dream job's: one versioned store
                 d = e.data
                 rows.append({"run_id": run_id, "path": d["path"], "version": d["version"], "step": d["step"],
                              "rev": d["rev"], "content": d["content"], "chars": d["chars"], "deleted": False})
-            elif e.type == "mem.delete":
+            elif e.type in MEM_DELETE_TYPES:
                 d = e.data
                 rows.append({"run_id": run_id, "path": d["path"], "version": d["version"], "step": d["step"],
                              "rev": d["rev"], "content": "", "chars": 0, "deleted": True})
