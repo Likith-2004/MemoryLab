@@ -330,7 +330,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
             yield conn
 
     Authed = Annotated[User, Depends(require_user)]
-    Sess = Annotated[Conn, Depends(session)]
+    Sess = Annotated[Conn, Depends(session, scope="function")]   # commit before the response is sent: a client that reads right after a write must see it
     def write_guard(user: Authed, conn: Sess) -> None:
         """Every user write: the account must still exist (a token outlives an erase by up to its TTL; that is a 401,
         not a foreign-key failure further down), then the per-user limit."""

@@ -2,6 +2,12 @@
 
 Format per milestone: scope, changes, tests/evidence, deviations, tag.
 
+## CLI (branch `cli`, after M6)
+
+- `packages/cli` (`memorylab`): login (password or magic link), logout [--everywhere], signup, me, delete-account, games, presets, models, runs new/list/show/stop/delete/patch/watch/events/checkpoints/score/frame/export/memory, fork, experiments, leaderboard, admin. `--json` everywhere, stable exit codes, provider key only from stdin/env/hidden prompt, session file 0600 with automatic refresh, WebSocket tail with resume and polling fallback, export verified by sha256, control characters escaped in all server text.
+- Tests: 25 unit + 46 against the real API served over HTTP/WS with real GoTrue and the accounts service.
+- Found and fixed: the API's DB session committed *after* the response was sent, so a client that read right after a write (a stream ticket, then connecting) could miss it; the session dependency now has `scope="function"`.
+
 ## M6: API and auth (branch `m6-api`; complete, awaiting final review, not tagged)
 
 - Local Supabase (CLI 3.0.0, Docker), 16 migrations: core schema with forced RLS, soft delete, ingest state, `api_private` write functions, login role `memorylab_api`, link-only unlisted runs and experiments, account erasure and tombstone, fork support, bundle reader, stream tickets, experiments, admin moderation, audit outcomes, hidden `experiments.run_ids`.

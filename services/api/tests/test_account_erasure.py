@@ -8,7 +8,7 @@ import pytest
 from accounts.eraser import TOMBSTONE_ID
 
 from conftest import CANARY_KEY, Env
-from test_gotrue import Auth, auth, real, stack  # noqa: F401  (fixtures)
+from test_gotrue import Auth, auth, real, real_factory, stack  # noqa: F401  (fixtures)
 from test_runs_create import body
 
 

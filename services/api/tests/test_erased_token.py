@@ -9,7 +9,7 @@ from accounts.eraser import TOMBSTONE_ID
 
 from conftest import Env
 from test_fork import CAPS, fork_body, source
-from test_gotrue import Auth, auth, real, stack  # noqa: F401  (fixtures)
+from test_gotrue import Auth, auth, real, real_factory, stack  # noqa: F401  (fixtures)
 from test_runs_create import body
 
 

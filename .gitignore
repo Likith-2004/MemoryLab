@@ -7,3 +7,4 @@ __pycache__/
 *.ram
 *.rtc
 infra/docker/.generated/
+SESSION_STATE.md

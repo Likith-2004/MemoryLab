@@ -98,8 +98,19 @@ def auth(stack: dict[str, str]) -> Iterator[Auth]:
 
 
 @pytest.fixture
-def real(make_env: Any, stack: dict[str, str], tmp_path: Any) -> Env:
-    """The API wired to the real JWKS and the real session checker (no fakes for identity)."""
+def real_factory(make_env: Any, stack: dict[str, str], tmp_path: Any) -> Any:
+    """Builds the API wired to the real JWKS and the real session checker (no fakes for identity). Extra keyword
+    arguments are Settings fields; `signer` is passed to the app (frames and export)."""
+    return lambda **kw: _build_real(make_env, stack, tmp_path, **kw)
+
+
+@pytest.fixture
+def real(real_factory: Any) -> Env:
+    env: Env = real_factory()
+    return env
+
+
+def _build_real(make_env: Any, stack: dict[str, str], tmp_path: Any, signer: Any = None, **settings_kw: Any) -> Env:
     from fastapi.testclient import TestClient
     from runlog.store import LocalObjectStore
 
@@ -108,11 +119,12 @@ def real(make_env: Any, stack: dict[str, str], tmp_path: Any) -> Env:
     from conftest import FakeKeys, FakeOrchestrator, make_settings
 
     base: Env = make_env()
-    settings = make_settings()
+    settings = make_settings(**settings_kw)
     verifier = JwtVerifier(http_jwks_fetcher(stack["API_URL"] + "/auth/v1/.well-known/jwks.json"),
                            audience="authenticated", issuer=None, algorithms=settings.allowed_algorithms)
     db = Database(API_DB_URL, max_size=3)
     orch = FakeOrchestrator()
+    store = LocalObjectStore(tmp_path / "s2")
     from accounts.app import create_app as create_accounts_app
     from accounts.eraser import AccountEraser, GoTrueAdmin
 
@@ -141,7 +153,8 @@ def real(make_env: Any, stack: dict[str, str], tmp_path: Any) -> Env:
     app = create_app(settings, verifier=verifier, db=db, orchestrator=orch, key_validator=FakeKeys(),
                      session_checker=GoTrueSessionChecker(stack["API_URL"] + "/auth/v1", stack["PUBLISHABLE_KEY"]),
                      auth_gateway=GoTrueGateway(stack["API_URL"] + "/auth/v1", stack["PUBLISHABLE_KEY"]),
-                     accounts=InProcessAccounts(), store=LocalObjectStore(tmp_path / "s2"), ip_salt=b"x")
+                     accounts=InProcessAccounts(), store=store, signer=signer, ip_salt=b"x")
+    base.store, base.signer = store, signer
     base.client = TestClient(app, raise_server_exceptions=False)
     base.orch = orch
     return base

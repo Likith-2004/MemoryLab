@@ -16,6 +16,9 @@ and acceptable for a hosted service; anything stronger (GPL/AGPL/SSPL/BUSL) is r
 | pysdl2-dll | 2.32.10 | MPL-2.0 (wrapper); bundles SDL2 (zlib) and SDL2_gfx/image/mixer/ttf plus avif, dav1d, tiff, webp, ogg, opus, wavpack, xmp, gme | MPL-2.0 is file-level copyleft; we do not modify it. Its many bundled codecs are unneeded with a null window and enlarge the attack surface: the sandbox image (M5) should prune unused libraries if PyBoy still starts, otherwise record as a known limitation. |
 
 | httpx | 0.28.1 | BSD-3-Clause | Direct HTTPS calls to the model provider (M3). Redirects, proxies and CA overrides from the environment are disabled in our client. |
+| click | 8.5.1 | BSD-3-Clause | `memorylab` CLI argument parsing and prompts. |
+| rich (+ markdown-it-py, mdurl) | 15.0.0 | MIT (mdurl: MIT) | CLI tables. Markup and highlighting are off; server text is stripped of control characters first. |
+| websockets | 17.4 | BSD-3-Clause | CLI live tail (`runs watch`), read-only client. |
 | httpcore / h11 / anyio / idna | 1.0.9 / 0.16.0 / 4.16.0 / 3.20 | BSD-3-Clause / MIT / MIT / BSD-3-Clause | httpx dependencies. |
 | certifi | 2026.10.23 | MPL-2.0 | CA bundle (data file); weak copyleft, unmodified. |
 
