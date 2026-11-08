@@ -75,7 +75,7 @@ def test_the_api_still_creates_a_run_for_a_real_token(real: Env, rest: Any) -> N
 
 
 def test_anon_cannot_list_unlisted_runs_but_the_api_serves_them_by_id(real: Env, rest: Any,  # noqa: F811
-                                                                      stack: dict[str, str]) -> None:
+                                                                      stack: dict[str, str]) -> None:  # noqa: F811
     owner = real.user()
     unlisted, public, private = real.run(owner, "unlisted"), real.run(owner, "public"), real.run(owner, "private")
     anon = {"apikey": stack["PUBLISHABLE_KEY"]}
