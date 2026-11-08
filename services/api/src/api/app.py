@@ -4,11 +4,13 @@ dependency that answers 404 for both missing and forbidden runs (no existence or
 
 import difflib
 import hashlib
+import ipaddress
 import logging
 import re
 import secrets
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, Query, Request, Response
@@ -19,7 +21,7 @@ from labharness.agent import RunConfig
 from labharness.presets import CUSTOM_LABEL, MAX_CUSTOM_CHARS, PRESETS, custom_preset, get_preset
 from labharness.providers.registry import PROVIDER_MODELS, check_model
 from psycopg.errors import RaiseException
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from runlog.eventlog import EventLogReader
 from runlog.redaction import ScrubFilter
 from runlog.store import ObjectStore
@@ -37,15 +39,37 @@ API = "/api/v1"
 _ACTIVE = ("queued", "starting", "running", "session_boundary", "dreaming", "stopping")   # runlog.lifecycle minus FINAL
 
 
-class CapsIn(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    max_steps: int
-    max_tokens: int
-    max_wall_s: float
+def _has_nul(value: Any) -> bool:
+    if isinstance(value, SecretStr):
+        value = value.get_secret_value()
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, dict):
+        return any(_has_nul(k) or _has_nul(v) for k, v in value.items())
+    if isinstance(value, list | tuple):
+        return any(_has_nul(v) for v in value)
+    return False
 
 
-class ValidateIn(BaseModel):
+class Body(BaseModel):
+    """Every request body: unknown fields refused, no coercion, and no NUL byte in any string (Postgres text
+    cannot hold one, so it would surface as a 500 DataError instead of a 422)."""
     model_config = ConfigDict(extra="forbid", strict=True)
+
+    @model_validator(mode="after")
+    def _no_nul(self) -> Any:
+        if _has_nul(dict(self)):
+            raise ValueError("NUL byte in input")
+        return self
+
+
+class CapsIn(Body):
+    max_steps: int = Field(ge=1, le=100_000)
+    max_tokens: int = Field(ge=1, le=1_000_000_000)
+    max_wall_s: int = Field(ge=1, le=86_400)           # strict int: 0.5 or "60" is a 422 before any quota is used
+
+
+class ValidateIn(Body):
     config: dict[str, Any]
     caps: CapsIn | None = None
     preset_text: str | None = Field(default=None, max_length=MAX_CUSTOM_CHARS)
@@ -57,14 +81,12 @@ class CreateRunIn(ValidateIn):
     api_key: SecretStr = Field(min_length=8, max_length=512)
 
 
-class PatchRunIn(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+class PatchRunIn(Body):
     title: str | None = Field(default=None, max_length=120)
     visibility: Literal["private", "unlisted", "public"] | None = None
 
 
-class SignupIn(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+class SignupIn(Body):
     email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     password: SecretStr = Field(min_length=12, max_length=128)
 
@@ -72,19 +94,16 @@ class SignupIn(BaseModel):
 SIGNUP_MESSAGE = "If an account exists, we've sent an email."
 
 
-class ReportIn(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+class ReportIn(Body):
     reason: str = Field(min_length=1, max_length=1000)
 
 
-class BreakerIn(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+class BreakerIn(Body):
     open: bool
     reason: str = Field(default="", max_length=200)
 
 
-class AdminKillIn(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+class AdminKillIn(Body):
     reason: str = Field(min_length=1, max_length=200)
 
 
@@ -102,8 +121,19 @@ def _uuid(value: str) -> str:
         raise NotFound from None
 
 
-def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+def _client_ip(request: Request, hops: int = 0) -> str:
+    """The socket peer, or with `hops` trusted proxies in front the address the outermost trusted proxy saw:
+    X-Forwarded-For entries to the left of that were supplied by the client and are never used."""
+    peer = request.client.host if request.client else "unknown"
+    if hops <= 0:
+        return peer
+    chain = [p.strip() for line in request.headers.getlist("x-forwarded-for") for p in line.split(",") if p.strip()]
+    if len(chain) < hops:
+        return peer                      # fewer entries than proxies: the header was not set by our gateway
+    try:
+        return str(ipaddress.ip_address(chain[-hops]))
+    except ValueError:
+        return peer
 
 
 def _ip_hash(ip: str, salt: bytes) -> str:
@@ -162,6 +192,9 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     salt = ip_salt or secrets.token_bytes(16)
     limiter = RateLimiter(*([clock] if clock else []))
 
+    def client_ip(request: Request) -> str:
+        return _client_ip(request, settings.trusted_proxy_hops)
+
     @app.middleware("http")
     async def headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         resp = await call_next(request)
@@ -215,8 +248,12 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
         return user
 
     def read_guard(request: Request, user: Annotated[User | None, Depends(bearer)]) -> None:
-        who = user.id if user else f"ip:{_ip_hash(_client_ip(request), salt)}"
+        who = user.id if user else f"ip:{_ip_hash(client_ip(request), salt)}"
         if not limiter.allow(("read", who), settings.read_limit_per_min, 60):
+            raise ApiError(429, "rate_limited", "Too many requests", {"retry-after": "60"})
+
+    def write_guard(user: Annotated[User, Depends(require_user)]) -> None:
+        if not limiter.allow(("write", user.id), settings.write_limit_per_min, 60):
             raise ApiError(429, "rate_limited", "Too many requests", {"retry-after": "60"})
 
     def session(user: Annotated[User | None, Depends(bearer)]) -> Any:
@@ -226,6 +263,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     Authed = Annotated[User, Depends(require_user)]
     Sess = Annotated[Conn, Depends(session)]
     Guard = Depends(read_guard)
+    WriteGuard = Depends(write_guard)
 
     def load_visible_run(run_id: str, conn: Sess) -> dict[str, Any]:
         """The one place a run is looked up for a caller. RLS decides visibility; absent and hidden are
@@ -296,7 +334,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     @app.post(f"{API}/auth/signup", status_code=202)
     def signup(body: SignupIn, request: Request) -> dict[str, str]:
         """One answer for new and existing emails. An existing account gets a recovery email instead of an error."""
-        ip = _ip_hash(_client_ip(request), salt)
+        ip = _ip_hash(client_ip(request), salt)
         if not limiter.allow(("signup-ip", ip), settings.signup_per_ip_per_hour, 3600):
             raise ApiError(429, "rate_limited", "Too many attempts", {"retry-after": "3600"})
         try:
@@ -316,7 +354,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
 
     @app.post(f"{API}/runs", status_code=202, dependencies=[Guard])
     def create_run(body: CreateRunIn, request: Request, user: Authed, conn: Sess) -> dict[str, Any]:
-        ip = _ip_hash(_client_ip(request), salt)
+        ip = _ip_hash(client_ip(request), salt)
         config, preset_text, doc = _resolve_config(body)          # invalid requests cost nothing but the read guard
         if not conn.execute("select 1 from public.games where name = %s", (body.game,)).fetchone():
             raise ApiError(422, "validation_failed", "unknown game")
@@ -381,7 +419,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     def get_run(run: Run) -> dict[str, Any]:
         return run
 
-    @app.patch(API + "/runs/{run_id}")
+    @app.patch(API + "/runs/{run_id}", dependencies=[WriteGuard])
     def patch_run(body: PatchRunIn, run: OwnerRun, conn: Sess) -> dict[str, Any]:
         if body.title is None and body.visibility is None:
             raise ApiError(422, "validation_failed", "nothing to change")
@@ -397,14 +435,14 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
             raise NotFound
         return _public_run(row)
 
-    @app.post(API + "/runs/{run_id}/stop")
+    @app.post(API + "/runs/{run_id}/stop", dependencies=[WriteGuard])
     def stop_run(run_id: str, user: Authed, conn: Sess) -> dict[str, Any]:
         run = load_visible_run(run_id, conn)
         if run["owner_id"] != user.id and not Database.is_admin(conn):
             raise NotFound
         return {"result": orchestrator.stop(run["id"], user.id)}      # idempotent upstream
 
-    @app.delete(API + "/runs/{run_id}", status_code=204)
+    @app.delete(API + "/runs/{run_id}", status_code=204, dependencies=[WriteGuard])
     def delete_run(run: OwnerRun, conn: Sess) -> Response:
         conn.execute("select public.soft_delete_run(%s)", (run["id"],))
         return Response(status_code=204)
@@ -440,6 +478,8 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     @app.get(API + "/runs/{run_id}/memory/file", dependencies=[Guard])
     def memory_file(run: Run, conn: Sess, path: Annotated[str, Query(max_length=256)],
                     version: Annotated[int | None, Query(ge=1)] = None) -> Response:
+        if "\x00" in path:
+            raise NotFound
         row = _memory_version(conn, run["id"], path, version)
         if row is None or row["deleted"]:
             raise NotFound
@@ -448,6 +488,8 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     @app.get(API + "/runs/{run_id}/memory/diff", dependencies=[Guard])
     def memory_diff(run: Run, conn: Sess, path: Annotated[str, Query(max_length=256)],
                     from_: Annotated[int, Query(alias="from", ge=0)], to: Annotated[int, Query(ge=1)]) -> Response:
+        if "\x00" in path:
+            raise NotFound
         old = "" if from_ == 0 else (_memory_version(conn, run["id"], path, from_) or {}).get("content")
         new = _memory_version(conn, run["id"], path, to)
         if old is None or new is None:
@@ -456,7 +498,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
                                     f"v{from_}", f"v{to}")
         return PlainTextResponse("".join(diff))
 
-    @app.post(API + "/runs/{run_id}/report", status_code=202)
+    @app.post(API + "/runs/{run_id}/report", status_code=202, dependencies=[WriteGuard])
     def report(body: ReportIn, run: Run, user: Authed, conn: Sess) -> dict[str, str]:
         if run["owner_id"] == user.id:
             raise ApiError(422, "validation_failed", "you cannot report your own run")
@@ -502,14 +544,24 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
 
 # ---------------------------------------------------------------- helpers
 
-_CURSOR = re.compile(r"^(\d{4}-\d\d-\d\dT[0-9:.+\-Z]+)\|([0-9a-f-]{36})$")
+_CURSOR = re.compile(r"^([0-9T:.+\-Z]{16,40})\|([0-9a-f-]{36})$")
 
 
-def _cursor(value: str) -> tuple[str, str]:
-    m = _CURSOR.match(value)
+def _cursor(value: str) -> tuple[datetime, str]:
+    m = _CURSOR.match(value) if len(value) <= 80 else None
     if not m:
         raise ApiError(422, "validation_failed", "bad cursor")
-    return m.group(1), _uuid(m.group(2))
+    try:
+        created = datetime.fromisoformat(m.group(1))
+        if created.tzinfo is None:
+            raise ValueError("no timezone")
+        created.astimezone()           # out-of-range offsets overflow here, not in Postgres
+    except (ValueError, OverflowError):
+        raise ApiError(422, "validation_failed", "bad cursor") from None
+    try:
+        return created, str(uuid.UUID(m.group(2)))
+    except ValueError:
+        raise ApiError(422, "validation_failed", "bad cursor") from None
 
 
 def _jsonable(row: dict[str, Any]) -> dict[str, Any]:

@@ -20,6 +20,8 @@ class Settings:
     run_create_per_ip_per_hour: int = 10
     key_failures_per_user_per_hour: int = 5
     signup_per_ip_per_hour: int = 10
+    write_limit_per_min: int = 30
+    trusted_proxy_hops: int = 0       # proxies in front of the API whose X-Forwarded-For entry is trusted
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -31,4 +33,5 @@ class Settings:
             db_url=os.environ.get("MEMORYLAB_DB_URL", cls.db_url),
             orchestrator_url=os.environ.get("MEMORYLAB_ORCHESTRATOR_URL", cls.orchestrator_url),
             orchestrator_token=os.environ.get("MEMORYLAB_ORCHESTRATOR_TOKEN", "").encode(),
+            trusted_proxy_hops=int(os.environ.get("MEMORYLAB_TRUSTED_PROXY_HOPS", "0")),
         )
