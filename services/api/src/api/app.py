@@ -26,6 +26,7 @@ from runlog.eventlog import EventLogReader
 from runlog.redaction import ScrubFilter
 from runlog.store import ObjectStore
 
+from .accounts_client import AccountsClient, AccountsError
 from .auth import AuthGateway, AuthUnavailable, JwtVerifier, SessionChecker, Unauthenticated, User
 from .db import Conn, Database
 from .limits import RateLimiter
@@ -101,6 +102,10 @@ class ReportIn(Body):
 class BreakerIn(Body):
     open: bool
     reason: str = Field(default="", max_length=200)
+
+
+class DeleteAccountIn(Body):
+    confirm: Literal["DELETE"]
 
 
 class AdminKillIn(Body):
@@ -185,7 +190,8 @@ class ApiError(Exception):
 
 
 def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orchestrator: OrchestratorClient,
-               key_validator: KeyValidator, session_checker: SessionChecker, auth_gateway: AuthGateway, store: ObjectStore | None = None,
+               key_validator: KeyValidator, session_checker: SessionChecker, auth_gateway: AuthGateway,
+               accounts: AccountsClient, store: ObjectStore | None = None,
                clock: Callable[[], float] | None = None, ip_salt: bytes | None = None) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, title="memorylab-api")
     app.add_middleware(BodyLimit, max_bytes=MAX_BODY)
@@ -310,6 +316,23 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
             "concurrent_runs": 1, "runs_per_hour": settings.run_create_per_user_per_hour,
             "reads_per_minute": settings.read_limit_per_min}}
 
+    @app.delete(f"{API}/me", status_code=204, dependencies=[WriteGuard])
+    def delete_me(body: DeleteAccountIn, user: Authed) -> Response:
+        """Erase the caller's account. The session is re-checked first, so a token that outlived a sign-out (or a
+        previous erase) cannot do this; the service-role work happens in the accounts service."""
+        if not session_checker.is_active(user.token):
+            raise Unauthenticated
+        if not limiter.allow(("erase", user.id), 3, 3600):
+            raise ApiError(429, "rate_limited", "Too many attempts", {"retry-after": "3600"})
+        try:
+            accounts.erase(user.id)
+        except AccountsError as exc:
+            headers = {"retry-after": str(exc.retry_after_s)} if exc.retry_after_s else None
+            if exc.code == "runs_still_active":
+                raise ApiError(409, "runs_still_active", "Your runs are still stopping; try again shortly", headers) from None
+            raise ApiError(exc.status, "internal", "Try again later", headers) from None
+        return Response(status_code=204)
+
     @app.get(f"{API}/games", dependencies=[Guard])
     def games(conn: Sess) -> list[dict[str, Any]]:
         rows = conn.execute("select id, name, licence, state_map_version from public.games order by name").fetchall()
@@ -377,6 +400,8 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
             except RaiseException as exc:
                 if "active_run_exists" in str(exc):
                     raise _active_run() from None
+                if "account_erased" in str(exc):
+                    raise Unauthenticated from None
                 if "caps_out_of_range" in str(exc):
                     raise ApiError(422, "validation_failed", "caps out of range") from None
                 raise

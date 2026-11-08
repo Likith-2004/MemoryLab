@@ -165,6 +165,17 @@ class FakeOrchestrator:
         return {"open": open_}
 
 
+class FakeAccounts:
+    def __init__(self) -> None:
+        self.erased: list[str] = []
+        self.fail: Any = None
+
+    def erase(self, user_id: str) -> None:
+        if self.fail:
+            raise self.fail
+        self.erased.append(user_id)
+
+
 class FakeSessions:
     def __init__(self) -> None:
         self.revoked: set[str] = set()
@@ -209,6 +220,7 @@ class Env:
     keys: FakeKeys
     sessions: FakeSessions
     gateway: FakeGateway
+    accounts: FakeAccounts
     settings: Settings
     users: list[str]
     games: list[str]
@@ -256,10 +268,12 @@ def make_env(admin_conn: psycopg.Connection[dict[str, Any]], tmp_path: Any) -> I
         verifier = JwtVerifier(lambda: {"keys": [JWK]}, audience=AUD, issuer=None,
                                algorithms=settings.allowed_algorithms)
         orch, keys, sessions, gateway = FakeOrchestrator(), FakeKeys(), FakeSessions(), FakeGateway()
+        accounts = FakeAccounts()
         from runlog.store import LocalObjectStore
         app = create_app(settings, verifier=verifier, db=db, orchestrator=orch, key_validator=keys, session_checker=sessions, auth_gateway=gateway,
-                         store=LocalObjectStore(tmp_path / "store"), ip_salt=b"test-salt")
-        env = Env(admin_conn, TestClient(app, raise_server_exceptions=False), orch, keys, sessions, gateway, settings, [], [])
+                         accounts=accounts, store=LocalObjectStore(tmp_path / "store"), ip_salt=b"test-salt")
+        env = Env(admin_conn, TestClient(app, raise_server_exceptions=False), orch, keys, sessions, gateway,
+                  accounts, settings, [], [])
         created.append((env, db))
         return env
 

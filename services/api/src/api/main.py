@@ -6,6 +6,7 @@ import os
 from fastapi import FastAPI
 from runlog.store import LocalObjectStore
 
+from .accounts_client import HttpAccounts
 from .app import create_app
 from .auth import GoTrueGateway, GoTrueSessionChecker, JwtVerifier, http_jwks_fetcher
 from .db import Database
@@ -29,6 +30,7 @@ def build() -> FastAPI:
         settings, verifier=verifier, db=Database(settings.db_url),
         orchestrator=HttpOrchestrator(settings.orchestrator_url, settings.orchestrator_token),
         key_validator=UnconfiguredKeyValidator(),
+        accounts=HttpAccounts(settings.accounts_url, settings.accounts_token),
         session_checker=GoTrueSessionChecker(settings.auth_url, settings.auth_apikey),
         auth_gateway=GoTrueGateway(settings.auth_url, settings.auth_apikey),
         store=LocalObjectStore(os.environ["MEMORYLAB_OBJECT_STORE"]))

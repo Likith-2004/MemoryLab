@@ -14,6 +14,8 @@ class Settings:
     db_url: str = "postgresql://memorylab_api:memorylab-api-local@127.0.0.1:54322/postgres"   # local; no superuser
     orchestrator_url: str = "http://127.0.0.1:8300"
     orchestrator_token: bytes = field(default=b"", repr=False)
+    accounts_url: str = "http://127.0.0.1:8400"
+    accounts_token: bytes = field(default=b"", repr=False)
     allowed_algorithms: tuple[str, ...] = ("ES256", "RS256")   # never HS*/none: no shared secret in the API
     read_limit_per_min: int = 120
     run_create_per_user_per_hour: int = 5
@@ -33,5 +35,7 @@ class Settings:
             db_url=os.environ.get("MEMORYLAB_DB_URL", cls.db_url),
             orchestrator_url=os.environ.get("MEMORYLAB_ORCHESTRATOR_URL", cls.orchestrator_url),
             orchestrator_token=os.environ.get("MEMORYLAB_ORCHESTRATOR_TOKEN", "").encode(),
+            accounts_url=os.environ.get("MEMORYLAB_ACCOUNTS_URL", cls.accounts_url),
+            accounts_token=os.environ.get("MEMORYLAB_ACCOUNTS_TOKEN", "").encode(),
             trusted_proxy_hops=int(os.environ.get("MEMORYLAB_TRUSTED_PROXY_HOPS", "0")),
         )

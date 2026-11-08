@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from api.auth import GoTrueGateway, GoTrueSessionChecker, JwtVerifier, http_jwks_fetcher
-from conftest import API_DB_URL, Env
+from conftest import API_DB_URL, DB_URL, Env
 
 INFRA = Path(__file__).resolve().parents[3] / "infra"
 PASSWORD = "pw-" + secrets.token_urlsafe(18)             # per-run throwaway for local test users
@@ -113,10 +113,35 @@ def real(make_env: Any, stack: dict[str, str], tmp_path: Any) -> Env:
                            audience="authenticated", issuer=None, algorithms=settings.allowed_algorithms)
     db = Database(API_DB_URL, max_size=3)
     orch = FakeOrchestrator()
+    from accounts.app import create_app as create_accounts_app
+    from accounts.eraser import AccountEraser, GoTrueAdmin
+
+    from api.accounts_client import AccountsError
+
+    class Killer:                                        # the orchestrator's kill, reduced to its database effect
+        def kill(self, run_id: str, actor: str, reason: str) -> str:
+            if getattr(base, "kill_works", True):             # a test can make the kill ineffective
+                base.admin.execute("update public.runs set status = 'killed' where id = %s", (run_id,))
+            return "killed"
+
+    accounts_token = b"a" * 40
+    eraser = AccountEraser(DB_URL, Killer(), GoTrueAdmin(stack["API_URL"] + "/auth/v1", stack["SECRET_KEY"]),
+                           wait_s=1, poll_s=0.1)
+    accounts_http = TestClient(create_accounts_app(eraser, accounts_token), raise_server_exceptions=False)
+
+    class InProcessAccounts:                             # the real accounts service, real DB, real GoTrue admin
+        def erase(self, user_id: str) -> None:
+            r = accounts_http.post("/internal/accounts/erase", json={"user_id": user_id},
+                                   headers={"authorization": "Bearer " + accounts_token.decode()})
+            if r.status_code == 409:
+                raise AccountsError(409, "runs_still_active", 5)
+            if r.status_code >= 400:
+                raise AccountsError(502, "internal")
+
     app = create_app(settings, verifier=verifier, db=db, orchestrator=orch, key_validator=FakeKeys(),
                      session_checker=GoTrueSessionChecker(stack["API_URL"] + "/auth/v1", stack["PUBLISHABLE_KEY"]),
                      auth_gateway=GoTrueGateway(stack["API_URL"] + "/auth/v1", stack["PUBLISHABLE_KEY"]),
-                     store=LocalObjectStore(tmp_path / "s2"), ip_salt=b"x")
+                     accounts=InProcessAccounts(), store=LocalObjectStore(tmp_path / "s2"), ip_salt=b"x")
     base.client = TestClient(app, raise_server_exceptions=False)
     base.orch = orch
     return base
