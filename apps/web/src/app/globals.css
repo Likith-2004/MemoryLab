@@ -45,3 +45,7 @@ a { color: var(--color-memory); text-underline-offset: 2px; }
   .row-new { animation: none; }
   * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+
+/* Run colours for comparison charts: distinct from the memory accent, and paired with a dash pattern so colour is never the only cue. */
+:root { --run-1: #8a3ffc; --run-2: #b3590a; --run-3: #198038; --run-4: #a2191f; --run-5: #5a5f66; --run-6: #00727a; }
+@media (prefers-color-scheme: dark) { :root { --run-1: #be95ff; --run-2: #f1a35a; --run-3: #6fdc8c; --run-4: #ff8389; --run-5: #b6bbc2; --run-6: #3ddbd9; } }

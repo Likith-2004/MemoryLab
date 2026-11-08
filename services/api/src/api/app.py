@@ -427,6 +427,11 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
         return [{"id": p.id, "version": p.version, "ref": p.ref, "text": p.text, "text_sha256": p.text_sha256,
                  "label": p.label, "is_adaptation": p.is_adaptation} for p in PRESETS.values()]
 
+    @app.get(f"{API}/features", dependencies=[Guard])
+    def features() -> dict[str, bool]:
+        """What this deployment has switched on, so a client can hide what would only be refused."""
+        return {"fork": settings.fork_enabled}
+
     @app.get(f"{API}/models", dependencies=[Guard])
     def models() -> dict[str, Any]:
         return {"providers": {k: list(v) for k, v in PROVIDER_MODELS.items()},
@@ -636,6 +641,14 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
             raise ApiError(503, "internal", "event store unavailable")
         page = EventLogReader(store, run["id"]).read_page(after_seq, limit)
         return {"events": [e.to_obj() for e in page], "next_after_seq": page[-1].seq if page else after_seq}
+
+    @app.get(API + "/runs/{run_id}/config", dependencies=[Guard])
+    def run_config_view(run: Run, conn: Sess) -> dict[str, Any]:
+        """The configuration a run was started with (what a fork starts from). Same visibility as the run."""
+        row = conn.execute("select config_json, config_hash, mode from api_private.run_config(%s)", (run["id"],)).fetchone()
+        if row is None:
+            raise NotFound
+        return {"config": row["config_json"], "config_hash": row["config_hash"], "mode": row["mode"]}
 
     @app.get(API + "/runs/{run_id}/score", dependencies=[Guard])
     def score(run: Run, conn: Sess) -> dict[str, Any]:
