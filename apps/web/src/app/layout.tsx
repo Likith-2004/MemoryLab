@@ -16,7 +16,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body>
         <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:p-2 focus:bg-panel">Skip to content</a>
         <Header />
-        <div id="main" tabIndex={-1} className="mx-auto max-w-6xl px-4 py-5">{children}</div>
+        <main id="main" tabIndex={-1} className="mx-auto max-w-6xl px-4 py-5">{children}</main>
       </body>
     </html>
   );

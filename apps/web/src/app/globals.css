@@ -31,10 +31,13 @@
   }
 }
 
-html { background: var(--color-surface); color: var(--color-ink); font-family: var(--font-sans); font-size: 14px; }
-body { margin: 0; min-height: 100vh; }
-a { color: var(--color-memory); text-underline-offset: 2px; }
-:focus-visible { outline: 2px solid var(--color-memory); outline-offset: 2px; }
+/* Base styles live in a layer so utilities (text-surface on a dark button, say) can override them. */
+@layer base {
+  html { background: var(--color-surface); color: var(--color-ink); font-family: var(--font-sans); font-size: 14px; }
+  body { margin: 0; min-height: 100vh; }
+  a { color: var(--color-memory); text-decoration: underline; text-underline-offset: 2px; }
+  :focus-visible { outline: 2px solid var(--color-memory); outline-offset: 2px; }
+}
 .mono { font-family: var(--font-mono); font-size: 13px; }
 .pixel { image-rendering: pixelated; image-rendering: crisp-edges; }
 

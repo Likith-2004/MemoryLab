@@ -32,6 +32,9 @@ All values come from the environment; secrets are never defaults. Tokens are >= 
 
 Migrations are `infra/supabase/migrations/*` (16 so far); the local password for `memorylab_api` is set by `infra/supabase/seed.sql` (never in production). Gateway: block `/auth/v1/signup`, `/auth/v1/otp` and `/auth/v1/recover` (enumeration; use `/api/v1/auth/*`). CLI: plain http is refused except to loopback (`MEMORYLAB_ALLOW_INSECURE=1` for dev). `api_private` must never be added to PostgREST's `schemas`.
 
+### Web app (M7)
+`cd apps/web && npm ci && MEMORYLAB_PUBLISHABLE_KEY=... npm run build && npm start` (Node 22+). `make web` = ruff on the harness, eslint, tsc, vitest, build, bundle scan, Playwright (needs `supabase start`; browsers via `npx playwright install chromium`). Environment (server side only; none of it is baked into the bundle): `MEMORYLAB_API_URL` (API as the web server reaches it), `MEMORYLAB_PUBLIC_API_URL` (API as browsers reach it: signed frame/export URLs and the WebSocket; the CSP is built from it), `MEMORYLAB_AUTH_URL` (GoTrue: only `/token` and `/logout`), `MEMORYLAB_PUBLISHABLE_KEY`, `MEMORYLAB_SITE_URL` (exact web origin: CSRF check, cookie flags), `MEMORYLAB_WEB_TRUSTED_HOPS` (>= 1 in production), optional `MEMORYLAB_CSP_REPORT_URI`. In production the server refuses to start if any of those URLs is plain http to a non-loopback host. The API needs `MEMORYLAB_ALLOWED_ORIGINS=<the site origin>` and `MEMORYLAB_TRUSTED_PROXY_HOPS=1`. Keep access logs off for the API's `/ws/`.
+
 ## Environment on this machine
 - rgbds 1.0.1 at `~/.local/opt/rgbds-1.0.1` (build tool for fixture ROMs).
 - gitleaks 8.30.1 at `~/.local/bin/gitleaks`.

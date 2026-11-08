@@ -75,7 +75,7 @@ export function AuthForm({ mode, next }: { mode: AuthMode; next?: string }) {
         </Field>
         {needsPassword ? (
           <Field id="password" label="Password" hint={mode === "signup" ? "At least 12 characters." : undefined}>
-            <input id="password" name="password" type="password" required minLength={mode === "signup" ? 12 : 1} maxLength={128}
+            <input id="password" name="password" type="password" required maxLength={128}
               autoComplete={mode === "signup" ? "new-password" : "current-password"} className={inputClass}
               value={password} onChange={(e) => setPassword(e.target.value)} />
           </Field>

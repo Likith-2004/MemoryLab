@@ -2,6 +2,13 @@
 
 Format per milestone: scope, changes, tests/evidence, deviations, tag.
 
+## M7: web (branch `m7-web`, in progress)
+
+- `apps/web`: Next.js 16 App Router, strict TypeScript, Tailwind with our own tokens. All 13 screens: landing, auth (sign in, sign up, reset, magic link), new run (4 steps + review), live run and replay (one screen, scrub with `?at=`), memory drawer, fork modal, experiment compare, leaderboard, my runs, account, admin, legal drafts and 404. Every listed state: queued, starting, running, session boundary, dreaming, stopping, ended with reason, disconnected/resuming (then polling), capacity_full, key_rejected, n < 5, runs still running, breaker banner.
+- Security: nonce CSP without unsafe-inline/eval, HSTS, Referrer/Permissions policy, no tokens in the browser (httpOnly cookie session behind a same-origin proxy with CSRF checks, path allowlist and trusted-hop client address), `no-raw-html` lint rule, built-bundle secret scan, production config guard. See SECURITY.md U-8.
+- Tests: 94 vitest, 35 Playwright (real stack: GoTrue, Postgres, accounts, a scripted orchestrator): launch to export, XSS corpus in memory/summaries/titles/reports, axe on every screen (light and dark), keyboard-only flow, 360 px, enumeration, security headers and network, state tests, Lighthouse. `make gate` runs all of it (`make web`).
+- Found by the tests: Radix inline styles vs the CSP (replaced), `upgrade-insecure-requests` on http, sign-in rate limit tripping the suite, a tab layout rule lost to `[hidden]`, an unlayered base style overriding utilities.
+
 ## CLI (branch `cli`, after M6)
 
 - `packages/cli` (`memorylab`): login (password or magic link), logout [--everywhere], signup, me, delete-account, games, presets, models, runs new/list/show/stop/delete/patch/watch/events/checkpoints/score/frame/export/memory, fork, experiments, leaderboard, admin. `--json` everywhere, stable exit codes, provider key only from stdin/env/hidden prompt, session file 0600 with automatic refresh, WebSocket tail with resume and polling fallback, export verified by sha256, control characters escaped in all server text.

@@ -157,5 +157,5 @@ function ProblemBanner({ problem }: { problem: ApiProblem; onRetry?: () => void 
   if (problem.code === "key_rejected") return null; // shown on the key field itself
   const retry = problem.retryAfter ? ` Retry in about ${problem.retryAfter >= 120 ? `${Math.round(problem.retryAfter / 60)} minutes` : `${problem.retryAfter} seconds`}.` : "";
   const text = problem.code === "capacity_full" ? `The lab is full right now.${retry}` : problem.code === "benchmark_patch_invalid" ? "Benchmark mode uses an approved preset." : problem.code === "rate_limited" && /active run/i.test(problem.title) ? "You already have a run in progress. Stop it or wait for it to end." : describe(problem);
-  return <Banner tone={problem.code === "capacity_full" ? "warn" : "bad"}>{text}</Banner>;
+  return <Banner role="alert" tone={problem.code === "capacity_full" ? "warn" : "bad"}>{text}</Banner>;
 }

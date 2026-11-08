@@ -137,6 +137,12 @@ describe("what is sent upstream", () => {
     expect(r.status).toBe(413);
     expect(calls).toEqual([]);
   });
+  it("caps a body that declares no length (chunked) after reading it, without forwarding it", async () => {
+    const big = "x".repeat(70 * 1024);
+    const r = await proxyPost(req("/bff/api/runs", { method: "POST", body: big }), ctx("runs"));   // no content-length header
+    expect(r.status).toBe(413);
+    expect(calls).toEqual([]);
+  });
   it("never follows redirects and passes a 302 straight to the browser", async () => {
     upstream = () => new Response(null, { status: 302, headers: { location: "http://api.example/_blob/x?sig=1", "x-frame-step": "10", "set-cookie": "x=1", server: "uvicorn" } });
     const r = await proxyGet(req("/bff/api/runs/r1/frames/12"), ctx("runs/r1/frames/12"));

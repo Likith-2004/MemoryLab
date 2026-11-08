@@ -28,7 +28,8 @@ async function post(request: NextRequest): Promise<NextResponse> {
   const email = body.email.trim().toLowerCase();
   const ip = clientAddress(request);
   // per target address (stops guessing one account) and, when we can trust one, per client address (stops spraying many)
-  if (limited(`login:email:${email}`, 10, 60) || (ip !== null && limited(`login:ip:${ip}`, 20, 60))) {
+  const perEmail = Number(process.env.MEMORYLAB_LOGIN_LIMIT_PER_MIN ?? "10") || 10; // the browser tests sign in far more often than a person
+  if (limited(`login:email:${email}`, perEmail, 60) || (ip !== null && limited(`login:ip:${ip}`, perEmail * 2, 60))) {
     return problem(429, "rate_limited", "Too many attempts", { "retry-after": "60" });
   }
   const tokens = await passwordLogin(email, body.password);

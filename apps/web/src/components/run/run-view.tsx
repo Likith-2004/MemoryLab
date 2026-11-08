@@ -1,11 +1,11 @@
 "use client";
-import * as Tabs from "@radix-ui/react-tabs";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ApiProblem, api, describe } from "@/lib/client";
 import { derive, toRows } from "@/lib/runmodel";
 import { FINAL_STATES, type Run, type RunStatus } from "@/lib/types";
 import { Banner, Button, StatusChip } from "../ui";
+import { Tabs } from "../tabs";
 import { BudgetPanel } from "./budget-panel";
 import { CheckpointsPanel } from "./checkpoints-panel";
 import { GameFrame } from "./game-frame";
@@ -29,6 +29,7 @@ export function RunView({ run, viewer, wsBase, forkEnabled, initialAt }: { run: 
   const { events, connection, loaded } = useRunEvents({ runId: run.id, live: !startsFinal, wsBase });
   const [at, setAt] = useState<number | null>(initialAt);
   const [group, setGroup] = useState(false);
+  const [tab, setTab] = useState("log");
   const [stopping, setStopping] = useState(false);
   const [notice, setNotice] = useState<{ tone: "bad" | "ok"; text: string } | null>(null);
   // eslint-disable-next-line react-hooks/set-state-in-effect -- reading a browser-only preference after hydration
@@ -38,8 +39,9 @@ export function RunView({ run, viewer, wsBase, forkEnabled, initialAt }: { run: 
   const cursor = at ?? full.step;
   const view = useMemo(() => derive(events, at ?? undefined), [events, at]);
   const rows = useMemo(() => toRows(events, group, at ?? undefined), [events, group, at]);
-  const status: RunStatus = (loaded && view.state ? view.state : run.status);
-  const ended = FINAL_STATES.includes(status);
+  const status: RunStatus = (loaded && view.state ? view.state : run.status); // as of the cursor
+  const overall: RunStatus = (loaded && full.state ? full.state : run.status); // as of the end of the log
+  const ended = FINAL_STATES.includes(overall); // export, stop and the final banner are about the run, not the cursor
   const replaying = at !== null || (ended && loaded);
   const canControl = viewer !== null && (viewer.id === run.owner_id || viewer.role === "admin");
   const fresh = connection === "live" && !replaying ? (events.at(-1)?.seq ?? null) : null;
@@ -81,7 +83,7 @@ export function RunView({ run, viewer, wsBase, forkEnabled, initialAt }: { run: 
   }
 
   const frameStep = (() => { for (let i = events.length - 1; i >= 0; i--) { const e = events[i]!; if (e.type === "obs" && (at === null || e.step <= at)) return e.step; } return null; })();
-  const reasonText = view.reason ? ` (${view.reason})` : "";
+  const reasonText = full.reason ? ` (${full.reason})` : "";
 
   return (
     <div>
@@ -93,19 +95,20 @@ export function RunView({ run, viewer, wsBase, forkEnabled, initialAt }: { run: 
         <span className="mono text-xs">score {view.score}</span>
         <span className="ml-auto flex items-center gap-2">
           {ended ? <Button variant="plain" onClick={exportBundle}>Export</Button> : null}
-          {canControl && !ended ? <Button variant="danger" disabled={stopping || status === "stopping"} onClick={stop}>Stop run</Button> : null}
+          {canControl && !ended ? <Button variant="danger" disabled={stopping || overall === "stopping"} onClick={stop}>Stop run</Button> : null}
         </span>
       </div>
 
       <div aria-live="polite">
         {notice ? <Banner tone={notice.tone}>{notice.text}</Banner> : null}
         {!ended && STATE_NOTE[status] ? <Banner tone="info">{STATE_NOTE[status]}</Banner> : null}
-        {ended ? <Banner tone={status === "failed" || status === "killed" ? "bad" : "info"}>Run {status}{reasonText}.</Banner> : null}
+        {ended ? <Banner tone={overall === "failed" || overall === "killed" ? "bad" : "info"}>Run {overall}{reasonText}.</Banner> : null}
         {connection === "resuming" ? <Banner tone="warn">Disconnected. Resuming the live view…</Banner> : null}
         {connection === "polling" ? <Banner tone="warn">The live connection is unavailable; updating every few seconds.</Banner> : null}
         {connection === "failed" ? <Banner tone="bad">Could not load this run&apos;s events. Reload to try again.</Banner> : null}
         {!loaded && connection === "loading" ? <p role="status" className="mb-2 text-sm text-muted">Loading the event log…</p> : null}
         {at !== null && !ended ? <Banner tone="info">Viewing step {at}. <Button variant="plain" onClick={follow}>Back to live</Button></Banner> : null}
+        {at !== null && ended ? <Banner tone="info">Replay at step {at}. <Button variant="plain" onClick={follow}>Jump to the end</Button></Banner> : null}
       </div>
 
       <div className="grid gap-3 md:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
@@ -115,20 +118,12 @@ export function RunView({ run, viewer, wsBase, forkEnabled, initialAt }: { run: 
           {replaying ? <p className="mt-1 text-xs text-muted">Replay: drag or use the arrow keys; [ and ] jump between memory changes.</p> : null}
         </div>
 
-        <Tabs.Root defaultValue="log" className="min-w-0">
-          <Tabs.List aria-label="Run panels" className="mb-2 flex gap-1 md:hidden">
-            {[["log", "Log"], ["memory", "Memory"], ["budget", "Budget"], ["checkpoints", "Checkpoints"]].map(([v, l]) => (
-              <Tabs.Trigger key={v} value={v!} className="rounded border border-line px-2 py-1 text-sm data-[state=active]:border-ink data-[state=active]:bg-ink data-[state=active]:text-surface">{l}</Tabs.Trigger>
-            ))}
-          </Tabs.List>
-          <div className="grid gap-3 lg:grid-cols-2">
-            <Tabs.Content value="log" forceMount className="min-w-0 data-[state=inactive]:hidden md:data-[state=inactive]:block"><LogPanel rows={rows} fresh={fresh} group={group}
-              onGroup={(v) => { setGroup(v); try { localStorage.setItem("ml.group", v ? "1" : "0"); } catch { /* ignore */ } }} /></Tabs.Content>
-            <Tabs.Content value="memory" forceMount className="min-w-0 data-[state=inactive]:hidden md:data-[state=inactive]:block"><MemoryPanel runId={run.id} atStep={cursor} events={events} /></Tabs.Content>
-            <Tabs.Content value="budget" forceMount className="min-w-0 data-[state=inactive]:hidden md:data-[state=inactive]:block"><BudgetPanel run={run} step={cursor} tokens={view.tokens} wallS={view.wallS} /></Tabs.Content>
-            <Tabs.Content value="checkpoints" forceMount className="min-w-0 data-[state=inactive]:hidden md:data-[state=inactive]:block"><CheckpointsPanel runId={run.id} canFork={run.visibility !== "private" || canControl} forkEnabled={forkEnabled} signedIn={viewer !== null} /></Tabs.Content>
-          </div>
-        </Tabs.Root>
+        <Tabs value={tab} onChange={setTab} tabs={[
+          { id: "log", label: "Log", panel: <LogPanel rows={rows} fresh={fresh} group={group} onGroup={(v) => { setGroup(v); try { localStorage.setItem("ml.group", v ? "1" : "0"); } catch { /* ignore */ } }} /> },
+          { id: "memory", label: "Memory", panel: <MemoryPanel runId={run.id} atStep={cursor} events={events} /> },
+          { id: "budget", label: "Budget", panel: <BudgetPanel run={run} step={cursor} tokens={view.tokens} wallS={view.wallS} /> },
+          { id: "checkpoints", label: "Checkpoints", panel: <CheckpointsPanel runId={run.id} canFork={run.visibility !== "private" || canControl} forkEnabled={forkEnabled} signedIn={viewer !== null} /> },
+        ]} />
       </div>
 
       <p className="mt-4 text-xs text-muted">

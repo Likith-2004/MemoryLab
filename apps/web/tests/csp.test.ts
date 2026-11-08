@@ -25,6 +25,10 @@ describe("content security policy", () => {
     expect(directive(prod, "connect-src")).toBe("connect-src 'self' wss://api.example.org");
     expect(directive(prod, "img-src")).toBe("img-src 'self' data: https://api.example.org");
   });
+  it("upgrade-insecure-requests follows the site's own scheme", () => {
+    expect(buildCsp({ ...base, dev: false, upgrade: false })).not.toContain("upgrade-insecure-requests");
+    expect(buildCsp({ ...base, dev: false, upgrade: true })).toContain("upgrade-insecure-requests");
+  });
   it("only development adds unsafe-eval", () => {
     const dev = buildCsp({ ...base, dev: true });
     expect(directive(dev, "script-src")).toContain("'unsafe-eval'");

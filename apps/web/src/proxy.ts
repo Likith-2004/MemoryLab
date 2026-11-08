@@ -14,6 +14,7 @@ export async function proxy(request: NextRequest): Promise<NextResponse> {
     apiOrigin: new URL(publicApi).origin,
     wsOrigin: wsOrigin(publicApi),
     reportUri: process.env.MEMORYLAB_CSP_REPORT_URI,
+    upgrade: webEnv().siteUrl.startsWith("https://"),
   });
   const headers = new Headers(request.headers);
   headers.set("x-nonce", nonce);

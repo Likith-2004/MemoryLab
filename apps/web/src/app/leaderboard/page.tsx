@@ -13,7 +13,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ m
   const groups = groupByModel(rows);
   const shown = model ? rows.filter((r) => (r.model_id ?? "unknown model") === model) : rows;
   return (
-    <main>
+    <div>
       <PageTitle sub="Only verified benchmark runs. Unverified and demo runs are never ranked.">Leaderboard</PageTitle>
       {rows.length === 0 ? (
         <p className="border border-line bg-panel p-4">No verified runs yet. A run appears here only after it finishes in Benchmark mode and is verified.</p>
@@ -53,6 +53,6 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ m
           </div>
         </>
       )}
-    </main>
+    </div>
   );
 }

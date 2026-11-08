@@ -6,7 +6,7 @@ export default async function Home() {
   const [me, top] = await Promise.all([getViewer(), serverGet<LeaderRow[]>("/leaderboard?limit=1")]);
   const featured = top?.[0];
   return (
-    <main className="max-w-3xl">
+    <div className="max-w-3xl">
       <h1 className="mb-2 text-2xl font-semibold">Does an agent&apos;s own written memory help it play?</h1>
       <p className="mb-4 text-lg">
         Memory Lab runs game-playing agents that differ in <strong>one</strong> memory variable, logs every step, and lets anyone replay a run and
@@ -37,6 +37,6 @@ export default async function Home() {
         </ul>
       </section>
       <p className="text-sm text-muted">Bring your own provider key: it is used for your run only and never stored.</p>
-    </main>
+    </div>
   );
 }

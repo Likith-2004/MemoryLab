@@ -1,0 +1,17 @@
+[
+  "<script>window.__xss = 'script'</script>",
+  "<img src=x onerror=\"window.__xss='img'\">",
+  "<svg onload=\"window.__xss='svg'\"></svg>",
+  "\"><script>window.__xss='breakout'</script>",
+  "javascript:window.__xss='js-url'",
+  "<a href=\"javascript:window.__xss='anchor'\">click</a>",
+  "<iframe srcdoc=\"<script>parent.__xss='iframe'</script>\"></iframe>",
+  "<style>@import 'http://evil.example/x.css';</style>",
+  "<meta http-equiv=\"refresh\" content=\"0;url=http://evil.example/\">",
+  "{{constructor.constructor('window.__xss=1')()}}",
+  "</pre><script>window.__xss='pre'</script>",
+  "<details open ontoggle=\"window.__xss='details'\">x</details>",
+  "[x](javascript:window.__xss='md')",
+  "![x](http://evil.example/track.png)",
+  "&lt;script&gt;window.__xss='entity'&lt;/script&gt;"
+]

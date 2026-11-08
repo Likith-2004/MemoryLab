@@ -8,9 +8,10 @@ export interface CspOptions {
   apiOrigin: string; // where signed frame/export URLs and the WebSocket live
   wsOrigin: string;
   reportUri?: string;
+  upgrade?: boolean; // upgrade-insecure-requests: only where the site itself is https (on http://localhost it would turn the API's http frame URLs into https)
 }
 
-export function buildCsp({ nonce, dev, apiOrigin, wsOrigin, reportUri }: CspOptions): string {
+export function buildCsp({ nonce, dev, apiOrigin, wsOrigin, reportUri, upgrade = !dev }: CspOptions): string {
   const directives: Record<string, string[]> = {
     "default-src": ["'self'"],
     "script-src": ["'self'", `'nonce-${nonce}'`, "'strict-dynamic'", ...(dev ? ["'unsafe-eval'"] : [])],
@@ -27,7 +28,7 @@ export function buildCsp({ nonce, dev, apiOrigin, wsOrigin, reportUri }: CspOpti
     "form-action": ["'self'"],
     "frame-ancestors": ["'none'"],
   };
-  if (!dev) directives["upgrade-insecure-requests"] = [];
+  if (upgrade) directives["upgrade-insecure-requests"] = [];
   if (reportUri) directives["report-uri"] = [reportUri];
   return Object.entries(directives)
     .map(([name, values]) => [name, ...values].join(" "))
