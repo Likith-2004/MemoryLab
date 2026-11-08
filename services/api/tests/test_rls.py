@@ -338,8 +338,10 @@ def test_experiments_follow_owner_and_visibility(db: Db) -> None:
     for vis in ("private", "unlisted", "public"):
         db.x("insert into public.experiments (owner_id, title, variable, visibility) values (%s, %s, 'preset', %s)",
              a, vis, vis)
-    db.as_(b)
-    assert {r["title"] for r in db.q("select title from public.experiments")} == {"unlisted", "public"}
+    for who in (b, None):                                             # unlisted = link-only: not listed to others
+        db.as_(who)
+        titles = {r["title"] for r in db.q("select title from public.experiments where owner_id = %s", a)}
+        assert titles == {"public"}
     db.as_(a)
     assert {r["title"] for r in db.q("select title from public.experiments")} == {"private", "unlisted", "public"}
     db.x("savepoint s")

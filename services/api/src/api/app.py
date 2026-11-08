@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import secrets
+import statistics
 import uuid
 import zipfile
 from collections.abc import Awaitable, Callable
@@ -55,6 +56,8 @@ log.addFilter(ScrubFilter())
 MAX_BODY = 64 * 1024
 API = "/api/v1"
 SIGNED_URL_TTL_S = 60
+MAX_COMPARE_EVENTS = 20_000      # per run: bounds the work of one compare request
+MAX_COMPARE_STEPS = 5_000
 MAX_EXPORT_BYTES = 64 * 1024 * 1024        # the store's own object cap; also bounds the work of a re-scan
 _FRAME_KEY = re.compile(r"^runs/[0-9a-f-]{36}/frames/(\d{7})\.png$")
 _ACTIVE = ("queued", "starting", "running", "session_boundary", "dreaming", "stopping")   # runlog.lifecycle minus FINAL
@@ -109,6 +112,25 @@ class ForkIn(Body):
     preset_text: str | None = Field(default=None, max_length=MAX_CUSTOM_CHARS)
     visibility: Literal["private", "unlisted", "public"] = "private"
     api_key: SecretStr = Field(min_length=8, max_length=512)
+
+
+# the top-level fields of a run configuration: an experiment's variable is one of them
+EXPERIMENT_VARIABLES = frozenset({"provider", "model_id", "preset_ref", "memory", "inject_path", "inject_cap_chars",
+                                  "observation", "screenshots", "caps", "mode"})
+
+
+class ExperimentIn(Body):
+    title: str = Field(min_length=1, max_length=120)
+    variable: str = Field(min_length=1, max_length=64)
+    run_ids: list[str] = Field(min_length=1, max_length=50)
+    visibility: Literal["private", "unlisted", "public"] = "private"
+
+
+class ExperimentPatchIn(Body):
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    visibility: Literal["private", "unlisted", "public"] | None = None
+    add_run_ids: list[str] = Field(default_factory=list, max_length=50)
+    remove_run_ids: list[str] = Field(default_factory=list, max_length=50)
 
 
 class PatchRunIn(Body):
@@ -693,6 +715,149 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
                 raise ApiError(422, "validation_failed", "you cannot report your own run") from None
             raise
         return {"status": "received"}
+
+    # ------------------------------------------------------------ experiments
+
+    def run_id_list(values: list[str]) -> list[str]:
+        try:
+            return [str(uuid.UUID(v)) for v in values]
+        except ValueError:
+            raise ApiError(422, "invalid_runs", "run_ids must be run ids") from None
+
+    def check_variable(conn: Conn, user: User, run_ids: list[str], variable: str) -> None:
+        """The runs of an experiment differ in the declared variable and in nothing else. They must all be the
+        caller's (a missing run and someone else's run are the same answer)."""
+        if variable not in EXPERIMENT_VARIABLES:
+            raise ApiError(422, "validation_failed", "unknown variable")
+        if not run_ids:
+            return
+        rows = conn.execute(
+            "select r.id, c.config_json from public.runs r join public.run_configs c on c.id = r.config_id "
+            "where r.id = any(%s) and r.owner_id = %s and r.deleted_at is null", (run_ids, user.id)).fetchall()
+        if len(rows) != len(set(run_ids)):
+            raise ApiError(422, "invalid_runs", "run_ids must be your own runs")
+        try:
+            configs = [RunConfig.from_dict(dict(r["config_json"])).to_dict() for r in rows]
+        except ValueError:
+            raise ApiError(422, "variable_mismatch", "a run has no valid configuration") from None
+        differing = sorted(k for k in configs[0] if k != variable and any(c.get(k) != configs[0][k] for c in configs[1:]))
+        if differing:
+            raise ApiError(422, "variable_mismatch",
+                           "runs differ in more than the declared variable: " + ", ".join(differing)[:120])
+
+    def experiment_error(exc: RaiseException) -> ApiError | Unauthenticated | NotFound:
+        text = str(exc)
+        if "account_erased" in text or "not_authenticated" in text:
+            return Unauthenticated()
+        if "experiment_run_not_owned" in text or "experiment_duplicate_runs" in text:
+            return ApiError(422, "invalid_runs", "run_ids must be distinct runs of yours")
+        if "experiment_not_found" in text:
+            return NotFound()
+        if "too_many_experiments" in text:
+            return ApiError(409, "limit_reached", "You have the maximum number of experiments")
+        raise exc
+
+    def experiment_view(conn: Conn, experiment_id: str) -> dict[str, Any]:
+        exp = conn.execute("select id, owner_id, title, variable, visibility, created_at "
+                           "from api_private.get_visible_experiment(%s)", (experiment_id,)).fetchone()
+        if exp is None:
+            raise NotFound
+        rows = conn.execute("select run_id, status, title, model_id, provider, steps, tokens, ended_at, "
+                            "progress_score, verified from api_private.experiment_runs(%s)", (experiment_id,)).fetchall()
+        scores = [float(r["progress_score"]) for r in rows if r["progress_score"] is not None]
+        in_progress = sum(r["status"] not in FINAL for r in rows)
+        warnings = (["n_below_5"] if len(scores) < 5 else []) + (["runs_still_running"] if in_progress else [])
+        summary = {"n": len(scores), "mean": statistics.fmean(scores) if scores else None,
+                   "min": min(scores) if scores else None, "max": max(scores) if scores else None,
+                   "stdev": statistics.stdev(scores) if len(scores) > 1 else None,
+                   "runs": len(rows), "runs_in_progress": in_progress, "warnings": warnings}
+        return {**_jsonable(exp), "runs": [_jsonable(r) for r in rows], "summary": summary}
+
+    @app.post(f"{API}/experiments", status_code=201, dependencies=[WriteGuard])
+    def create_experiment(body: ExperimentIn, user: Authed, conn: Sess) -> dict[str, Any]:
+        ids = run_id_list(body.run_ids)
+        check_variable(conn, user, ids, body.variable)
+        try:
+            row = conn.execute("select api_private.create_experiment(%s, %s, %s::uuid[], %s) as id",
+                               (body.title, body.variable, ids, body.visibility)).fetchone()
+        except RaiseException as exc:
+            raise experiment_error(exc) from None
+        return {"id": str(row["id"])}  # type: ignore[index]
+
+    @app.get(f"{API}/experiments", dependencies=[Guard])
+    def list_experiments(user: Authed, conn: Sess, limit: Annotated[int, Query(ge=1, le=100)] = 50) -> list[dict[str, Any]]:
+        rows = conn.execute("select id, title, variable, visibility, cardinality(run_ids) as n_runs, created_at "
+                            "from public.experiments where owner_id = %s order by created_at desc, id desc limit %s",
+                            (user.id, limit)).fetchall()
+        return [_jsonable(r) for r in rows]
+
+    @app.get(API + "/experiments/{experiment_id}", dependencies=[Guard])
+    def get_experiment(experiment_id: str, conn: Sess) -> dict[str, Any]:
+        return experiment_view(conn, _uuid(experiment_id))
+
+    @app.patch(API + "/experiments/{experiment_id}", dependencies=[WriteGuard])
+    def patch_experiment(experiment_id: str, body: ExperimentPatchIn, user: Authed, conn: Sess) -> dict[str, Any]:
+        eid = _uuid(experiment_id)
+        add, remove = run_id_list(body.add_run_ids), run_id_list(body.remove_run_ids)
+        if body.title is None and body.visibility is None and not add and not remove:
+            raise ApiError(422, "validation_failed", "nothing to change")
+        try:
+            conn.execute("select api_private.update_experiment(%s, %s, %s, %s::uuid[], %s::uuid[])",
+                         (eid, body.title, body.visibility, add or None, remove or None))
+        except RaiseException as exc:
+            raise experiment_error(exc) from None
+        current = conn.execute("select variable, run_ids from public.experiments where id = %s and owner_id = %s",
+                               (eid, user.id)).fetchone()
+        if current is None:
+            raise NotFound
+        check_variable(conn, user, [str(r) for r in current["run_ids"]], current["variable"])   # rolls the change back
+        return experiment_view(conn, eid)
+
+    def compare_guard(request: Request, user: Annotated[User | None, Depends(bearer)]) -> None:
+        who = user.id if user else f"ip:{_ip_hash(client_ip(request), salt)}"
+        if not limiter.allow(("compare", who), 10, 60):
+            raise ApiError(429, "rate_limited", "Too many requests", {"retry-after": "60"})
+
+    @app.get(API + "/experiments/{experiment_id}/compare", dependencies=[Guard, Depends(compare_guard)])
+    def compare_experiment(experiment_id: str, conn: Sess,
+                           metric: Annotated[Literal["score", "tokens"], Query()] = "score") -> dict[str, Any]:
+        """Per-step series of one metric for every run of the experiment the viewer may see, aligned on one step axis
+        (a value carries forward until the run's next observation; null before its first)."""
+        if store is None:
+            raise ApiError(503, "internal", "event store unavailable")
+        eid = _uuid(experiment_id)
+        if conn.execute("select 1 from api_private.get_visible_experiment(%s)", (eid,)).fetchone() is None:
+            raise NotFound
+        runs = conn.execute("select run_id from api_private.experiment_runs(%s)", (eid,)).fetchall()
+        per_run: dict[str, dict[int, float]] = {}
+        for r in runs:
+            rid = str(r["run_id"])
+            points: dict[int, float] = {}
+            for n, e in enumerate(EventLogReader(store, rid).iter_events()):
+                if n >= MAX_COMPARE_EVENTS:
+                    break
+                if metric == "score" and e.type == "obs" and isinstance(e.data.get("score"), int | float):
+                    points[e.step] = float(e.data["score"])
+                elif metric == "tokens" and e.type == "model.call" and isinstance(e.data.get("tokens_total"), int | float):
+                    points[e.step] = float(e.data["tokens_total"])
+            per_run[rid] = points
+        axis = sorted({step for pts in per_run.values() for step in pts})
+        if len(axis) > MAX_COMPARE_STEPS:
+            stride = -(-len(axis) // MAX_COMPARE_STEPS)
+            axis = axis[::stride]
+        series = []
+        for rid, pts in per_run.items():
+            values: list[float | None] = []
+            last: float | None = None
+            known = sorted(pts)
+            at = 0
+            for step in axis:
+                while at < len(known) and known[at] <= step:
+                    last = pts[known[at]]
+                    at += 1
+                values.append(last)
+            series.append({"run_id": rid, "values": values})
+        return {"metric": metric, "steps": axis, "series": series}
 
     # ------------------------------------------------------------ leaderboard
 

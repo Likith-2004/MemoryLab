@@ -26,6 +26,8 @@ WRITES: list[tuple[str, str, Any]] = [
     ("POST", "/api/v1/runs", "CREATE"),
     ("POST", "/api/v1/runs/{run}/fork", "FORK"),
     ("POST", "/api/v1/runs/{run}/stream-ticket", None),
+    ("POST", "/api/v1/experiments", "EXPERIMENT"),
+    ("PATCH", "/api/v1/experiments/{run}", {"title": "t"}),            # {run} is just a uuid here: the 401 comes first
     ("DELETE", "/api/v1/me", {"confirm": "DELETE"}),
 ]
 
@@ -55,6 +57,8 @@ def test_every_write_with_a_token_of_an_erased_account_is_a_401(real: Env, erase
     elif payload == "FORK":
         payload = fork_body(erased["cp"])
         assert payload["caps"] == CAPS
+    elif payload == "EXPERIMENT":
+        payload = {"title": "t", "variable": "preset_ref", "run_ids": [erased["run"]]}
     r = real.client.request(method, path.format(run=erased["run"]), json=payload, headers=erased["headers"])
     assert r.status_code == 401, (method, path, r.status_code, r.text)
     assert r.json()["code"] == "unauthenticated"
@@ -101,6 +105,8 @@ def test_an_account_marked_erased_but_not_yet_deleted_cannot_write_either(env: E
         payload = body(env, game)
     elif payload == "FORK":
         payload = fork_body(cp)
+    elif payload == "EXPERIMENT":
+        payload = {"title": "t", "variable": "preset_ref", "run_ids": [run]}
     r = env.client.request(method, path.format(run=run), json=payload, headers=bearer(ghost))
     assert r.status_code == 401, (method, path, r.status_code, r.text)
     assert env.orch.submitted == [] and env.keys.calls == []
