@@ -133,7 +133,7 @@ Entry format for charter decisions: ID, context, options, choice, reason, how to
 
 **Process: local, reversible installs are within the charter** (owner instruction). They are decided without asking and logged here.
 
-**M6-0 Supabase CLI installed locally** (`~/.local/bin/supabase`, user-level, no sudo) to run the local Supabase stack in Docker. RLS tests need `auth.uid()`, so M6 is not built on plain Postgres.
+**M6-0 Supabase CLI installed locally** (`~/.local/bin/supabase`, user-level, no sudo) to run the local Supabase stack in Docker. RLS tests need `auth.uid()`, so M6 is not built on plain Postgres. Release 3.0.0 verified against the published sha256 (`checksums.txt`) before install. Project in `infra/supabase` (`project_id = memorylab`, access-token TTL 900 s, email confirmation required). Started with `supabase start -x studio,imgproxy,vector,edge-runtime,logflare,postgres-meta,supavisor,mailpit` (only db, auth, rest, kong, storage, realtime) to keep the footprint small; containers are labelled `com.supabase.cli.project=memorylab`, ports 54321-54324 (other projects on this daemon use none of them and are not touched). Stop with `supabase stop --workdir infra`. Local demo keys printed by the CLI are public defaults and never used outside this machine.
 
 ## Open (not decided here)
 
