@@ -46,12 +46,14 @@ def test_run_and_its_children_follow_visibility(db: Db, viewer: str, visibility:
          "values (%s, 0, 'k', 1, 0, %s)", run, "b" * 64)
     db.x("insert into public.run_scores values (%s, 1, 1, 1, 1, 1, 0, 0, false)", run)
     db.as_({"owner": owner, "other": other, "anon": None, "admin": admin}[viewer])
-    expected = 1 if sees else 0
+    privileged = viewer in ("owner", "admin")
     for table in ("runs", "run_events_index", "memory_files", "checkpoints", "run_scores"):
         key = "id" if table == "runs" else "run_id"
+        # the runs table lists public runs only to others (unlisted = link-only); child tables follow run_visible
+        expected = 1 if (privileged or (sees and (table != "runs" or visibility == "public"))) else 0
         assert len(db.q(f"select 1 from public.{table} where {key} = %s", run)) == expected, table
     cfg = db.q("select 1 from public.run_configs")
-    assert len(cfg) == (1 if viewer in ("owner", "admin") or sees else 0)
+    assert len(cfg) == (1 if privileged or visibility == "public" else 0)
 
 
 def test_soft_deleted_runs_are_hidden_from_everyone_but_owner_and_admin(db: Db) -> None:
@@ -381,3 +383,33 @@ def test_ingest_state_is_invisible_to_every_user_role(db: Db) -> None:
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             db.q("select * from public.run_ingest_state")
         db.x("rollback to savepoint s")
+
+
+def test_get_visible_run_returns_the_link_only_rows_the_runs_table_does_not_list(db: Db) -> None:
+    owner, other, admin = db.new_user(), db.new_user(), db.new_user("admin")
+    priv, unl, pub = (db.make_run(owner, v) for v in ("private", "unlisted", "public"))
+    gone = db.make_run(owner, "unlisted", deleted_at="2026-01-01")
+
+    def got(run: str) -> bool:
+        return len(db.q("select id from api_private.get_visible_run(%s)", run)) == 1
+
+    for who, expect in ((owner, (True, True, True, True)), (admin, (True, True, True, True)),
+                        (other, (False, True, True, False)), (None, (False, True, True, False))):
+        db.as_(who)
+        assert (got(priv), got(unl), got(pub), got(gone)) == expect, who
+    db.as_(None)
+    assert {str(r["id"]) for r in db.q("select id from public.runs")} == {pub}      # the table lists public only
+    db.as_(other)
+    assert {str(r["id"]) for r in db.q("select id from public.runs")} == {pub}
+    assert db.q("select id from api_private.get_visible_run(gen_random_uuid())") == []
+
+
+def test_unlisted_run_configs_are_not_listable_through_the_data_api(db: Db) -> None:
+    owner, other = db.new_user(), db.new_user()
+    unl = db.make_run(owner, "unlisted")
+    db.as_(None)
+    assert db.q("select 1 from public.run_configs") == []
+    db.as_(other)
+    assert db.q("select 1 from public.run_configs") == []
+    db.as_(owner)
+    assert len(db.q("select 1 from public.run_configs")) == 1 and unl

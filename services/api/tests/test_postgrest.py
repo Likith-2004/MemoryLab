@@ -72,3 +72,22 @@ def test_the_api_still_creates_a_run_for_a_real_token(real: Env, rest: Any) -> N
     assert r.status_code == 202, r.text
     row = real.admin.execute("select owner_id, status from public.runs where id = %s", (r.json()["run_id"],)).fetchone()
     assert (str(row["owner_id"]), row["status"]) == (rest.uid, "queued")             # type: ignore[index]
+
+
+def test_anon_cannot_list_unlisted_runs_but_the_api_serves_them_by_id(real: Env, rest: Any,  # noqa: F811
+                                                                      stack: dict[str, str]) -> None:
+    owner = real.user()
+    unlisted, public, private = real.run(owner, "unlisted"), real.run(owner, "public"), real.run(owner, "private")
+    anon = {"apikey": stack["PUBLISHABLE_KEY"]}
+    base = stack["API_URL"] + "/rest/v1"
+    for headers in (anon, {**anon, "authorization": "Bearer " + rest.token}):
+        listed = {r["id"] for r in httpx.get(base + "/runs?select=id", headers=headers).json()}
+        assert public in listed and unlisted not in listed and private not in listed
+        assert httpx.get(f"{base}/runs?id=eq.{unlisted}&select=id", headers=headers).json() == []
+    hidden_cfgs = {str(r["config_id"]) for r in real.admin.execute(
+        "select config_id from public.runs where id = any(%s)", ([unlisted, private],)).fetchall()}
+    visible_cfgs = {r["id"] for r in httpx.get(f"{base}/run_configs?select=id", headers=anon).json()}
+    assert visible_cfgs and not visible_cfgs & hidden_cfgs                              # only the public run's config
+    assert real.client.get(f"/api/v1/runs/{unlisted}").status_code == 200              # link-only still works
+    assert real.client.get(f"/api/v1/runs/{private}").status_code == 404
+    assert httpx.post(base + "/rpc/get_visible_run", json={"p_run_id": unlisted}, headers=anon).status_code == 404

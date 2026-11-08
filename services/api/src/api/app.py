@@ -266,9 +266,9 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     WriteGuard = Depends(write_guard)
 
     def load_visible_run(run_id: str, conn: Sess) -> dict[str, Any]:
-        """The one place a run is looked up for a caller. RLS decides visibility; absent and hidden are
-        indistinguishable (404)."""
-        row = conn.execute(f"select {RUN_COLS} from public.runs where id = %s and deleted_at is null",
+        """The one place a run is looked up for a caller. The database decides visibility (owner, admin, or
+        link-only unlisted/public); absent and hidden are indistinguishable (404)."""
+        row = conn.execute(f"select {RUN_COLS} from api_private.get_visible_run(%s) where deleted_at is null",
                            (_uuid(run_id),)).fetchone()
         if row is None:
             raise NotFound
