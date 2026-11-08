@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 @dataclass(frozen=True)
 class Settings:
     jwks_url: str
+    auth_url: str = "http://127.0.0.1:54321/auth/v1"
+    auth_apikey: str = field(default="", repr=False)
     audience: str = "authenticated"
     issuer: str | None = None
     db_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
@@ -17,12 +19,15 @@ class Settings:
     run_create_per_user_per_hour: int = 5
     run_create_per_ip_per_hour: int = 10
     key_failures_per_user_per_hour: int = 5
+    signup_per_ip_per_hour: int = 10
 
     @classmethod
     def from_env(cls) -> Settings:
         return cls(
             jwks_url=os.environ["MEMORYLAB_JWKS_URL"],
             issuer=os.environ.get("MEMORYLAB_JWT_ISSUER"),
+            auth_url=os.environ.get("MEMORYLAB_AUTH_URL", cls.auth_url),
+            auth_apikey=os.environ.get("MEMORYLAB_AUTH_APIKEY", ""),
             db_url=os.environ.get("MEMORYLAB_DB_URL", cls.db_url),
             orchestrator_url=os.environ.get("MEMORYLAB_ORCHESTRATOR_URL", cls.orchestrator_url),
             orchestrator_token=os.environ.get("MEMORYLAB_ORCHESTRATOR_TOKEN", "").encode(),

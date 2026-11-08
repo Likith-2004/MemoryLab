@@ -135,6 +135,28 @@ Entry format for charter decisions: ID, context, options, choice, reason, how to
 
 **M6-0 Supabase CLI installed locally** (`~/.local/bin/supabase`, user-level, no sudo) to run the local Supabase stack in Docker. RLS tests need `auth.uid()`, so M6 is not built on plain Postgres. Release 3.0.0 verified against the published sha256 (`checksums.txt`) before install. Project in `infra/supabase` (`project_id = memorylab`, access-token TTL 900 s, email confirmation required). Started with `supabase start -x studio,imgproxy,vector,edge-runtime,logflare,postgres-meta,supavisor,mailpit` (only db, auth, rest, kong, storage, realtime) to keep the footprint small; containers are labelled `com.supabase.cli.project=memorylab`, ports 54321-54324 (other projects on this daemon use none of them and are not touched). Stop with `supabase stop --workdir infra`. Local demo keys printed by the CLI are public defaults and never used outside this machine.
 
+## M6: API and auth
+
+**M6-1 Schema and RLS.** `infra/supabase/migrations/*`: every public table has RLS enabled and forced; user JWTs get column-level grants only (create a queued run request, change `title`/`visibility`, edit own `handle`); all state, counters, scores, memory, events and ingest state are service-role only. Admin = `profiles.role` via `public.is_admin()`, never a claim. 38 RLS test cases; 4 deliberate policy/grant mutations (`run_visible` always true, `is_admin` trusting claims, a user `status` grant, a dropped insert owner check), each caught.
+
+**M6-2 Unlisted runs are readable by anyone who queries the table (REVIEW, spec-literal).** The plan says "others read if `visibility<>'private'`". Run ids are unguessable UUIDs and the API only lists the caller's own runs, but a direct PostgREST query can enumerate unlisted runs. Tightening needs a security-definer lookup-by-id path for unlisted runs (the public API would use it instead of table reads). Not done; owner decision wanted before public launch.
+
+**M6-3 Visibility 404 everywhere.** One dependency (`load_visible_run`) is the only run lookup; missing, hidden and soft-deleted runs are indistinguishable (same status, body, header names; tested). A non-owner who can see a run gets 404 (not 403) on owner-only actions.
+
+**M6-4 Signup goes through the API (`POST /api/v1/auth/signup`).** GoTrue answers 422 `user_already_exists` for an existing confirmed email and 200 with a user body for a new one: account enumeration. Our endpoint returns one 202 body for both and sends an existing account a recovery email instead of an error. Raw `/auth/v1/signup` is still reachable on the local stack: the deployment gateway must block it (strict xfail test records the leak and fails if GoTrue changes). CAPTCHA is not configured locally (NOT RUN).
+
+**M6-5 Access tokens stay valid until `exp` (900 s) after sign-out; refresh tokens do not.** Tested against the real GoTrue (refresh after logout fails, global logout kills the other device). Admin routes re-check the session against GoTrue on every request (fails closed), so a signed-out admin loses admin at once.
+
+**M6-6 JWT verification** is ES256/RS256 only (no HS*, no `none`; algorithm-confusion tested), JWKS cached with at most one refetch per 30 s for unknown `kid`s, `role` must be `authenticated` (anon and service keys are not sessions), `sub` must be a UUID.
+
+**M6-7 Run creation order:** validate (cost: read guard only) -> key-failure lockout -> create quota (5/user/h, 10/IP/h) -> provider key check -> insert rows with the user's JWT (RLS) -> commit -> orchestrator submit. The key goes straight to the orchestrator and is not stored anywhere; a canary test dumps every public table. **Known gap (REVIEW):** if the orchestrator refuses after the row is inserted, the row stays `queued` (users cannot update status). A service-side reaper (queue TTL, spec: 10 min) must fail such rows; not built.
+
+**M6-8 Provider key validation is NOT RUN.** The API depends on a `KeyValidator`; the entrypoint wires one that rejects every key until a real validator can be tested with a model key (BLOCKED.md B-1).
+
+**M6-9 Postgres `RunRepository`** (`ingest.pg_repository`): `lock()` is one transaction with `select ... for update` on the run row, re-entrant per thread, rolled back on error. The object-store write happens before the commit, so a crash between them leaves the log ahead of the index; `EventLogWriter` reconciles its tail on restart (existing M4 behaviour), but this window is not separately tested. `runs.status` widened to the full lifecycle in migration 3.
+
+**M6-10 Licences:** psycopg is LGPL-3.0 (weak copyleft, same handling as PyBoy), PyJWT MIT, cryptography Apache/BSD.
+
 ## Open (not decided here)
 
 - Real public game and its RAM map (spec decision #1; Option A track).

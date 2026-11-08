@@ -8,7 +8,7 @@ import pytest
 from conftest import Db
 
 TABLES = ["profiles", "games", "start_states", "presets", "run_configs", "runs", "run_events_index",
-          "memory_files", "checkpoints", "run_scores", "experiments", "audit_log", "reports"]
+          "memory_files", "checkpoints", "run_scores", "experiments", "audit_log", "reports", "run_ingest_state"]
 
 
 def test_every_public_table_has_forced_rls(db: Db) -> None:
@@ -272,3 +272,16 @@ def test_soft_delete_function_is_owner_only_and_not_callable_by_anon(db: Db) -> 
     assert db.q("select public.soft_delete_run(%s) v", run) == [{"v": True}]
     db.as_service()
     assert db.q("select deleted_at is not null d from public.runs where id = %s", run) == [{"d": True}]
+
+
+def test_ingest_state_is_invisible_to_every_user_role(db: Db) -> None:
+    owner = db.new_user()
+    run = db.make_run(owner, "public")
+    db.as_service()
+    db.x("insert into public.run_ingest_state (run_id) values (%s)", run)
+    for who in (owner, None):
+        db.as_(who)
+        db.x("savepoint s")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            db.q("select * from public.run_ingest_state")
+        db.x("rollback to savepoint s")

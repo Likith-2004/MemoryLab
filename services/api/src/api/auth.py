@@ -5,7 +5,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 import jwt
@@ -80,3 +80,64 @@ def http_jwks_fetcher(url: str) -> Callable[[], dict[str, Any]]:
         data = resp.json()
         return data if isinstance(data, dict) else {}
     return fetch
+
+
+class SessionChecker(Protocol):
+    def is_active(self, token: str) -> bool: ...
+
+
+class GoTrueSessionChecker:
+    """Admin actions re-check the session with Supabase on every request, so a signed-out or revoked
+    session loses admin access immediately instead of at access-token expiry."""
+
+    def __init__(self, auth_url: str, apikey: str, timeout_s: float = 3.0) -> None:
+        self._http = httpx.Client(base_url=auth_url, timeout=timeout_s, follow_redirects=False,
+                                  headers={"apikey": apikey})
+
+    def is_active(self, token: str) -> bool:
+        try:
+            return self._http.get("/user", headers={"authorization": f"Bearer {token}"}).status_code == 200
+        except httpx.HTTPError:
+            return False        # fail closed
+
+
+class AuthGateway(Protocol):
+    def signup(self, email: str, password: str) -> bool:
+        """Create the account; False means it already existed. Raises AuthUnavailable on anything else."""
+        ...
+
+    def recover(self, email: str) -> None: ...
+
+
+class AuthUnavailable(Exception):
+    pass
+
+
+class GoTrueGateway:
+    """Server-side signup so the response can be made uniform (GoTrue itself answers 422 for an existing
+    confirmed email and 200 with a user body for a new one). Uses the publishable key only."""
+
+    def __init__(self, auth_url: str, apikey: str, timeout_s: float = 10.0) -> None:
+        self._http = httpx.Client(base_url=auth_url, timeout=timeout_s, follow_redirects=False,
+                                  headers={"apikey": apikey})
+
+    def signup(self, email: str, password: str) -> bool:
+        try:
+            resp = self._http.post("/signup", json={"email": email, "password": password})
+        except httpx.HTTPError:
+            raise AuthUnavailable from None
+        if resp.status_code == 200:
+            return True
+        try:
+            code = resp.json().get("error_code")
+        except ValueError:
+            code = None
+        if resp.status_code == 422 and code == "user_already_exists":
+            return False
+        raise AuthUnavailable
+
+    def recover(self, email: str) -> None:
+        try:
+            self._http.post("/recover", json={"email": email})
+        except httpx.HTTPError:
+            raise AuthUnavailable from None

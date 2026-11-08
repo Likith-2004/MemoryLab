@@ -55,6 +55,7 @@ source = { editable = "services/api" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "ingest" },
     { name = "labharness" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pyjwt", extra = ["crypto"] },
@@ -66,6 +67,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "ingest", editable = "services/ingest" },
     { name = "labharness", editable = "packages/labharness" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.9" },
@@ -424,6 +426,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "labharness" },
     { name = "pillow" },
+    { name = "psycopg", extra = ["binary", "pool"] },
     { name = "runlog" },
     { name = "uvicorn" },
 ]
@@ -433,6 +436,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "labharness", editable = "packages/labharness" },
     { name = "pillow", specifier = ">=11" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2" },
     { name = "runlog", editable = "packages/runlog" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]

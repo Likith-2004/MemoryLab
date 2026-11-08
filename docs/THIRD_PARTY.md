@@ -21,6 +21,9 @@ and acceptable for a hosted service; anything stronger (GPL/AGPL/SSPL/BUSL) is r
 
 | fastapi / starlette / pydantic (+core, annotated-types, annotated-doc) | 0.162.2 / 1.10.0 / 2.14.3 | MIT / BSD-3-Clause / MIT | Ingest service and (M6) the public API. |
 | uvicorn / click | 0.54.0 / 8.5.1 | BSD-3-Clause | ASGI server for local runs. |
+| psycopg / psycopg-binary / psycopg-pool | 3.3.8 / 3.3.8 / 3.3.3 | LGPL-3.0-only | M6 Postgres access (API, ingest). Weak copyleft like PyBoy: unmodified pip dependency, never vendored; images must keep it replaceable and ship the licence text. Same legal sign-off item as PyBoy before public launch. |
+| PyJWT | 2.15.1 | MIT | M6 JWT verification (asymmetric algorithms only). |
+| cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | PyJWT[crypto] (ES256/RS256). |
 | `compression.zstd` | Python 3.14 stdlib | PSF-2.0 | Event-log segment compression (no third-party zstd package). |
 
 ## Development-only dependencies (not shipped)

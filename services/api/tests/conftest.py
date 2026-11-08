@@ -160,6 +160,32 @@ class FakeOrchestrator:
         return {"open": open_}
 
 
+class FakeSessions:
+    def __init__(self) -> None:
+        self.revoked: set[str] = set()
+
+    def is_active(self, token: str) -> bool:
+        return token not in self.revoked
+
+
+class FakeGateway:
+    def __init__(self) -> None:
+        self.existing: set[str] = set()
+        self.signups: list[str] = []
+        self.recovered: list[str] = []
+        self.down = False
+
+    def signup(self, email: str, password: str) -> bool:
+        from api.auth import AuthUnavailable
+        if self.down:
+            raise AuthUnavailable
+        self.signups.append(email)
+        return email not in self.existing
+
+    def recover(self, email: str) -> None:
+        self.recovered.append(email)
+
+
 class FakeKeys:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -176,6 +202,8 @@ class Env:
     client: TestClient
     orch: FakeOrchestrator
     keys: FakeKeys
+    sessions: FakeSessions
+    gateway: FakeGateway
     settings: Settings
     users: list[str]
     games: list[str]
@@ -222,11 +250,11 @@ def make_env(admin_conn: psycopg.Connection[dict[str, Any]], tmp_path: Any) -> I
         db = Database(DB_URL, max_size=4)
         verifier = JwtVerifier(lambda: {"keys": [JWK]}, audience=AUD, issuer=None,
                                algorithms=settings.allowed_algorithms)
-        orch, keys = FakeOrchestrator(), FakeKeys()
+        orch, keys, sessions, gateway = FakeOrchestrator(), FakeKeys(), FakeSessions(), FakeGateway()
         from runlog.store import LocalObjectStore
-        app = create_app(settings, verifier=verifier, db=db, orchestrator=orch, key_validator=keys,
+        app = create_app(settings, verifier=verifier, db=db, orchestrator=orch, key_validator=keys, session_checker=sessions, auth_gateway=gateway,
                          store=LocalObjectStore(tmp_path / "store"), ip_salt=b"test-salt")
-        env = Env(admin_conn, TestClient(app, raise_server_exceptions=False), orch, keys, settings, [], [])
+        env = Env(admin_conn, TestClient(app, raise_server_exceptions=False), orch, keys, sessions, gateway, settings, [], [])
         created.append((env, db))
         return env
 

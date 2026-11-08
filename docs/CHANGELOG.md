@@ -2,6 +2,18 @@
 
 Format per milestone: scope, changes, tests/evidence, deviations, tag.
 
+## M6: API and auth (branch `m6-api`, in progress: core delivered, remaining routes listed in HANDOFF)
+
+- Local Supabase (CLI 3.0.0, Docker) with 3 migrations: core schema + RLS on every table, soft delete, ingest state. Access-token TTL 900 s, email confirmation required.
+- `services/api`: JWT verification (ES256/RS256 via JWKS), RLS-backed reads under the caller's role, one visibility dependency (404 for missing/hidden/deleted), catalogue, runs (validate, create, list, get, patch, stop, delete, events, score, memory tree/file/diff, checkpoints, report), leaderboard, admin (runs, kill, breaker) with a live session re-check, uniform signup, rate limits, strict caps.
+- `ingest.pg_repository`: Postgres `RunRepository` with row-lock transactions.
+- Tests: API 231 (RLS 38, auth 17, authz matrix 136, real GoTrue 13 incl. 1 strict xfail documenting GoTrue's own signup enumeration, run creation and canary 15, admin 6, signup 6), ingest +7 against Postgres. Mutations caught: 4 RLS, 4 API, 1 session re-check, 1 repository lock.
+- Gate (`make gate`) now needs the local stack running (`MEMORYLAB_REQUIRE_DB=1` makes an absent database a failure, not a skip).
+- Found and fixed along the way: `run_configs` policy compared the wrong `id` (non-owners could never read a visible run's config); validation failures were consuming the creation quota; the first schema's `runs.status` set did not match the run lifecycle.
+- NOT RUN: provider key validation (B-1), CAPTCHA, gateway rules, real signup email delivery beyond local mailpit, any load/abuse test (k6).
+- NOT BUILT yet: `DELETE /me`, stream tickets + WebSocket, fork, frames (signed URLs), export, experiments and compare, admin reports/unverify, the queued-row reaper, `GET /runs/{id}/manifest`.
+- Deviations/findings: DECISIONS M6-1..M6-10 (M6-2 and M6-7 need owner review).
+
 ## M5: sandbox and orchestrator (branch `m5-sandbox`, tag `m5-done`)
 
 - Egress allowlist proxy, worker (stdin job, heartbeats, graceful stop), orchestrator (validation against server maxima, queue/TTL/limits/breaker, hardened container per run, heartbeat/wall kill, finalisation, audit), Dockerfiles with lockfile-hashed deps and pruned SDL libraries.

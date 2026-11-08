@@ -24,7 +24,7 @@ from runlog.eventlog import EventLogReader
 from runlog.redaction import ScrubFilter
 from runlog.store import ObjectStore
 
-from .auth import JwtVerifier, Unauthenticated, User
+from .auth import AuthGateway, AuthUnavailable, JwtVerifier, SessionChecker, Unauthenticated, User
 from .db import Conn, Database
 from .limits import RateLimiter
 from .orchestrator_client import KeyValidator, OrchestratorClient, UpstreamError
@@ -34,7 +34,7 @@ log = logging.getLogger("api")
 log.addFilter(ScrubFilter())
 MAX_BODY = 64 * 1024
 API = "/api/v1"
-_ACTIVE = ("queued", "running")
+_ACTIVE = ("queued", "starting", "running", "session_boundary", "dreaming", "stopping")   # runlog.lifecycle minus FINAL
 
 
 class CapsIn(BaseModel):
@@ -61,6 +61,15 @@ class PatchRunIn(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     title: str | None = Field(default=None, max_length=120)
     visibility: Literal["private", "unlisted", "public"] | None = None
+
+
+class SignupIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    password: SecretStr = Field(min_length=12, max_length=128)
+
+
+SIGNUP_MESSAGE = "If an account exists, we've sent an email."
 
 
 class ReportIn(BaseModel):
@@ -143,7 +152,7 @@ class ApiError(Exception):
 
 
 def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orchestrator: OrchestratorClient,
-               key_validator: KeyValidator, store: ObjectStore | None = None,
+               key_validator: KeyValidator, session_checker: SessionChecker, auth_gateway: AuthGateway, store: ObjectStore | None = None,
                clock: Callable[[], float] | None = None, ip_salt: bytes | None = None) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, title="memorylab-api")
     app.add_middleware(BodyLimit, max_bytes=MAX_BODY)
@@ -234,6 +243,8 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     OwnerRun = Annotated[dict[str, Any], Depends(owner_run)]
 
     def admin_user(user: Authed, conn: Sess) -> User:
+        if not session_checker.is_active(user.token):
+            raise Unauthenticated        # revoked/signed-out sessions lose admin access now, not at expiry
         if not Database.is_admin(conn):
             raise NotFound               # admin routes do not exist for non-admins
         return user
@@ -278,6 +289,19 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     def models() -> dict[str, Any]:
         return {"providers": {k: list(v) for k, v in PROVIDER_MODELS.items()},
                 "price_table": {"version": None, "as_of": None, "note": "no price table loaded; no cost estimate shown"}}
+
+    @app.post(f"{API}/auth/signup", status_code=202)
+    def signup(body: SignupIn, request: Request) -> dict[str, str]:
+        """One answer for new and existing emails. An existing account gets a recovery email instead of an error."""
+        ip = _ip_hash(_client_ip(request), salt)
+        if not limiter.allow(("signup-ip", ip), settings.signup_per_ip_per_hour, 3600):
+            raise ApiError(429, "rate_limited", "Too many attempts", {"retry-after": "3600"})
+        try:
+            if not auth_gateway.signup(body.email.lower(), body.password.get_secret_value()):
+                auth_gateway.recover(body.email.lower())
+        except AuthUnavailable:
+            raise ApiError(503, "internal", "Try again later", {"retry-after": "60"}) from None
+        return {"message": SIGNUP_MESSAGE}
 
     # ------------------------------------------------------------ runs
 

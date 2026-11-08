@@ -43,3 +43,14 @@ def test_admin_can_stop_someone_elses_visible_run_and_sees_private_ones(env: Env
     assert env.client.get(f"/api/v1/runs/{run}", headers=bearer(admin)).status_code == 200
     assert env.client.post(f"/api/v1/runs/{run}/stop", headers=bearer(admin)).status_code == 200
     assert env.orch.stopped == [(run, admin)]
+
+
+def test_a_revoked_session_loses_admin_access_immediately(env: Env) -> None:
+    admin = env.user("admin")
+    headers = bearer(admin)
+    assert env.client.get("/api/v1/admin/runs", headers=headers).status_code == 200
+    env.sessions.revoked.add(headers["authorization"].split()[1])          # signed out / revoked at Supabase
+    r = env.client.get("/api/v1/admin/runs", headers=headers)
+    assert r.status_code == 401 and r.json()["code"] == "unauthenticated"
+    assert env.client.post("/api/v1/admin/breaker", json={"open": True, "reason": "x"}, headers=headers).status_code == 401
+    assert env.orch.breaker_calls == []
