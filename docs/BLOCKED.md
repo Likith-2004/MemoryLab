@@ -4,5 +4,6 @@ Format: item, what is blocked, why (boundary), what is needed from the owner.
 
 | ID | Item | Blocked by | Needed |
 |---|---|---|---|
+| B-3 | gVisor/Firecracker runtime | `runsc` not installable here (no sudo) | Install gVisor on the run-worker host and set `SandboxResources.runtime="runsc"`; re-run `test_docker.py`. |
 | B-2 | S3-compatible object store backend and signed URLs | Local development only: no cloud accounts (boundary 1). `LocalObjectStore` implements the `ObjectStore` protocol | An S3/R2 bucket and credentials at deployment time; a MinIO-backed backend can be added and tested locally in M10/M11. |
 | B-1 | Real Anthropic model calls and the metered pilot (3 runs per arm A and B) | No `.env` with a key (boundary 1: money) | Put `ANTHROPIC_API_KEY` in `.env` (gitignored) and a spend cap; until then every real-model check is "NOT RUN". The adapter's request/response shapes follow Anthropic's public docs and are tested only against a mock transport and recorded-style fixtures; `temperature`, prompt caching and `tool_choice: any` behaviour with the newest models are unverified. |

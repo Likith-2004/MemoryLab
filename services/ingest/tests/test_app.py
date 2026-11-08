@@ -63,7 +63,7 @@ def test_scope_separation_between_orchestrator_and_worker(env) -> None:  # type:
     assert env.post(rid, 1, [ev("obs")], "orchestrator").status_code == 403         # orchestrator writes run.state/error only
     assert env.post(rid, 1, [ev("run.state", state="starting")], "worker").status_code == 422   # state not writable by worker
     env.start(rid)
-    assert env.post(rid, 3, [ev("run.state", state="killed")], "worker").status_code == 422
+    assert env.post(rid, 2, [ev("run.state", state="killed")], "worker").status_code == 422
     assert env.client.put(f"/v1/runs/{rid}/frames/1", content=png(), headers={**env.headers(rid, "orchestrator"), "content-type": "image/png"}).status_code == 403
     assert env.client.put(f"/v1/runs/{rid}/manifest", json={"run_id": rid}, headers=env.headers(rid, "worker")).status_code == 403
     assert env.client.post(f"/v1/runs/{rid}/close", headers=env.headers(rid, "worker")).status_code == 403
@@ -73,8 +73,8 @@ def test_scope_separation_between_orchestrator_and_worker(env) -> None:  # type:
 def test_events_are_stored_with_gapless_seq_and_server_time(env) -> None:  # type: ignore[no-untyped-def]
     rid = env.run()
     env.start(rid)
-    r = env.post(rid, 3, [ev("obs", 1, snapshot={"milestones": 0}, score=0), ev("model.call", 1, tokens_total=120, usage={})])
-    assert r.status_code == 200 and r.json() == {"batch_no": 3, "accepted": 2, "next_seq": 5}
+    r = env.post(rid, 2, [ev("obs", 1, snapshot={"milestones": 0}, score=0), ev("model.call", 1, tokens_total=120, usage={})])
+    assert r.status_code == 200 and r.json() == {"batch_no": 2, "accepted": 2, "next_seq": 5}
     events = list(EventLogReader(env.store, rid).iter_events())
     assert [e.seq for e in events] == [1, 2, 3, 4] and all(e.run_id == rid and e.ts.endswith("Z") for e in events)
     rec = env.repo.get(rid)
@@ -94,36 +94,36 @@ def test_clients_cannot_supply_seq_ts_or_run_id(env) -> None:  # type: ignore[no
 def test_retry_of_the_last_batch_is_acknowledged_not_duplicated(env) -> None:  # type: ignore[no-untyped-def]
     rid = env.run()
     env.start(rid)
-    first = env.post(rid, 3, [ev("obs", 1, snapshot={"milestones": 0}, score=0)])
-    again = env.post(rid, 3, [ev("obs", 1, snapshot={"milestones": 0}, score=0)])
+    first = env.post(rid, 2, [ev("obs", 1, snapshot={"milestones": 0}, score=0)])
+    again = env.post(rid, 2, [ev("obs", 1, snapshot={"milestones": 0}, score=0)])
     assert first.json() == again.json()
     assert len(list(EventLogReader(env.store, rid).iter_events())) == 3
-    assert env.post(rid, 5, [ev("obs", 2, snapshot={"milestones": 0}, score=0)]).status_code == 409     # skipped ahead
-    assert env.post(rid, 2, [ev("obs", 2, snapshot={"milestones": 0}, score=0)]).status_code == 409     # too old
-    assert env.post(rid, 4, [ev("obs", 2, snapshot={"milestones": 0}, score=0)]).status_code == 200
+    assert env.post(rid, 4, [ev("obs", 2, snapshot={"milestones": 0}, score=0)]).status_code == 409     # skipped ahead
+    assert env.post(rid, 1, [ev("obs", 2, snapshot={"milestones": 0}, score=0)]).status_code == 409     # too old
+    assert env.post(rid, 3, [ev("obs", 2, snapshot={"milestones": 0}, score=0)]).status_code == 200
 
 
 def test_lifecycle_is_enforced_by_ingest(env) -> None:  # type: ignore[no-untyped-def]
     rid = env.run()
     assert env.post(rid, 1, [ev("run.state", state="running")], "worker").status_code == 422        # no start yet
     env.start(rid)
-    assert env.post(rid, 3, [ev("run.state", state="completed")]).status_code == 422                  # must stop first
-    assert env.post(rid, 3, [ev("run.state", state="stopping"), ev("run.state", state="capped")]).status_code == 200
-    assert env.post(rid, 4, [ev("obs", 1, snapshot={"milestones": 0}, score=0)]).status_code == 409  # after the end
+    assert env.post(rid, 2, [ev("run.state", state="completed")]).status_code == 422                  # must stop first
+    assert env.post(rid, 2, [ev("run.state", state="stopping"), ev("run.state", state="capped")]).status_code == 200
+    assert env.post(rid, 3, [ev("obs", 1, snapshot={"milestones": 0}, score=0)]).status_code == 409  # after the end
     rid2 = env.run()
     env.start(rid2)
     same_batch = [ev("run.state", state="stopping"), ev("run.state", state="failed"), ev("error", code="late")]
-    assert env.post(rid2, 3, same_batch).status_code == 422                                          # after the end, same batch
+    assert env.post(rid2, 2, same_batch).status_code == 422                                          # after the end, same batch
     assert len(list(EventLogReader(env.store, rid2).iter_events())) == 2
 
 
 def test_a_rejected_batch_writes_nothing_and_does_not_advance(env) -> None:  # type: ignore[no-untyped-def]
     rid = env.run()
     env.start(rid)
-    bad = env.post(rid, 3, [ev("obs", 1, snapshot={"milestones": 0}, score=0), ev("bogus")])
+    bad = env.post(rid, 2, [ev("obs", 1, snapshot={"milestones": 0}, score=0), ev("bogus")])
     assert bad.status_code == 422 and bad.json()["code"] == "validation_failed" and "bogus" not in bad.text
-    assert env.repo.get(rid).next_batch_no == 3 and len(list(EventLogReader(env.store, rid).iter_events())) == 2
-    assert env.post(rid, 3, [ev("obs", 1, snapshot={"milestones": 0}, score=0)]).status_code == 200
+    assert env.repo.get(rid).next_batch_no == {"worker": 2, "orchestrator": 2} and len(list(EventLogReader(env.store, rid).iter_events())) == 2
+    assert env.post(rid, 2, [ev("obs", 1, snapshot={"milestones": 0}, score=0)]).status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -151,10 +151,10 @@ def test_event_and_byte_quotas(tmp_path) -> None:  # type: ignore[no-untyped-def
     env = make_env(tmp_path, Limits(max_events_per_run=4, max_bytes_per_run=2_000))
     rid = env.run()
     env.start(rid)                                                                         # 2 events
-    assert env.post(rid, 3, [ev("model.summary", 1, text="x" * 1500)]).status_code == 200
-    r = env.post(rid, 4, [ev("model.summary", 1, text="y" * 1500)])
+    assert env.post(rid, 2, [ev("model.summary", 1, text="x" * 1500)]).status_code == 200
+    r = env.post(rid, 3, [ev("model.summary", 1, text="y" * 1500)])
     assert r.status_code == 429 and r.json()["code"] == "quota_exceeded"
-    assert env.post(rid, 4, [ev("error", 1, code="a"), ev("error", 1, code="b"), ev("error", 1, code="c")]).status_code == 429
+    assert env.post(rid, 3, [ev("error", 1, code="a"), ev("error", 1, code="b"), ev("error", 1, code="c")]).status_code == 429
     assert len(list(EventLogReader(env.store, rid).iter_events())) == 3                  # nothing written by the refused batches
 
 
@@ -177,7 +177,7 @@ def test_memory_events_become_memory_rows(env) -> None:  # type: ignore[no-untyp
                                                     "chars": 2, "after_sha256": "x", "before_sha256": None, "created": True, "diff": ""}}
     delete = {"type": "mem.delete", "step": 2, "data": {"path": "a.md", "version": 2, "step": 2, "rev": 2,
                                                       "before_sha256": "x", "chars": 2}}
-    assert env.post(rid, 3, [write, delete]).status_code == 200
+    assert env.post(rid, 2, [write, delete]).status_code == 200
     rows = env.repo.memory_rows[rid]
     assert [(r["path"], r["version"], r["deleted"], r["content"]) for r in rows] == [("a.md", 1, False, "hi"), ("a.md", 2, True, "")]
 
@@ -186,7 +186,7 @@ def test_ingest_scrubs_credential_patterns_it_receives(env) -> None:  # type: ig
     rid = env.run()
     env.start(rid)
     key = "sk-ant-api03-Zq8vN2xLm4Kp7RtWc1YbH6dFg3JsAe5UoIi9PlXzC0nVq"
-    assert env.post(rid, 3, [ev("model.summary", 1, text=f"oops {key}")]).status_code == 200
+    assert env.post(rid, 2, [ev("model.summary", 1, text=f"oops {key}")]).status_code == 200
     stored = [e for e in EventLogReader(env.store, rid).iter_events() if e.type == "model.summary"][0]
     assert key not in json.dumps(stored.data) and "[REDACTED]" in stored.data["text"]
     assert env.service.redactor.hits == 1
@@ -245,7 +245,7 @@ def test_close_requires_an_ended_run_and_a_manifest_then_builds_the_bundle(env) 
     h = env.headers(rid, "orchestrator")
     assert env.client.post(f"/v1/runs/{rid}/close", headers=h).status_code == 409           # not ended
     env.start(rid)
-    assert env.post(rid, 3, [ev("obs", 1, snapshot={"milestones": 3}, score=2, ram_sha256="a"),
+    assert env.post(rid, 2, [ev("obs", 1, snapshot={"milestones": 3}, score=2, ram_sha256="a"),
                              ev("model.call", 1, tokens_total=50, usage={}),
                              ev("run.state", 1, state="stopping", reason="steps"), ev("run.state", 1, state="capped", reason="steps")]).status_code == 200
     assert env.client.post(f"/v1/runs/{rid}/close", headers=h).status_code == 409           # no manifest
@@ -253,7 +253,7 @@ def test_close_requires_an_ended_run_and_a_manifest_then_builds_the_bundle(env) 
     r = env.client.post(f"/v1/runs/{rid}/close", headers=h)
     assert r.status_code == 200 and r.json()["closed"] is True and len(r.json()["bundle_sha256"]) == 64
     assert env.client.post(f"/v1/runs/{rid}/close", headers=h).json() == r.json()           # idempotent
-    assert env.post(rid, 4, [ev("obs", 2)]).status_code == 409                               # closed: no more writes
+    assert env.post(rid, 3, [ev("obs", 2)]).status_code == 409                               # closed: no more writes
     assert put_frame(env, rid, 9, png()).status_code == 409
     from runlog.bundle import verify_bundle
     report = verify_bundle(env.store.get(f"runs/{rid}/bundle.zip"))                          # sparse test events: must report, not crash
@@ -286,3 +286,37 @@ def test_internal_errors_are_opaque(env, monkeypatch: pytest.MonkeyPatch, caplog
 def test_responses_carry_no_stack_traces_or_server_banner(env) -> None:  # type: ignore[no-untyped-def]
     r = env.client.post("/v1/runs/not-a-run/events", content=b"{", headers={"authorization": "Bearer x", "content-type": "application/json"})
     assert "Traceback" not in r.text and "server" not in {k.lower() for k in r.headers if k.lower() == "x-powered-by"}
+
+
+def test_orchestrator_and_worker_batches_are_numbered_independently(env) -> None:  # type: ignore[no-untyped-def]
+    rid = env.run()
+    env.start(rid)                                                                 # orchestrator batch 1, worker batch 1
+    assert env.post(rid, 2, [ev("obs", 1, snapshot={"milestones": 0}, score=0)]).status_code == 200
+    assert env.post(rid, 2, [ev("error", 1, code="warning")], "orchestrator").status_code == 200
+    retry = env.post(rid, 2, [ev("error", 1, code="warning")], "orchestrator")
+    assert retry.status_code == 200 and retry.json()["batch_no"] == 2             # a retry is acknowledged per scope
+    assert env.post(rid, 4, [ev("run.state", state="killed")], "orchestrator").status_code == 409   # skipped ahead
+    assert env.post(rid, 3, [ev("run.state", state="killed")], "orchestrator").status_code == 200
+    assert env.repo.get(rid).status == "killed"
+    assert env.post(rid, 3, [ev("obs", 2, snapshot={"milestones": 0}, score=0)]).status_code == 409   # the run has ended
+
+
+def test_status_is_orchestrator_only_and_reports_progress(env) -> None:  # type: ignore[no-untyped-def]
+    rid = env.run()
+    h = env.headers(rid, "orchestrator")
+    assert env.client.get(f"/v1/runs/{rid}/status", headers=env.headers(rid, "worker")).status_code == 403
+    assert env.client.get(f"/v1/runs/{rid}/status").status_code == 401
+    assert env.client.get(f"/v1/runs/{rid}/status", headers=h).json() == {"status": None, "closed": False, "events": 0, "manifest_sealed": False, "next_batch_no": 1}
+    env.start(rid)
+    body = env.client.get(f"/v1/runs/{rid}/status", headers=h).json()
+    assert body["status"] == "running" and body["events"] == 2
+    assert env.client.get(f"/v1/runs/{env.run()}/status", headers=h).status_code == 403   # token is for another run
+
+
+def test_unauthenticated_callers_get_401_even_with_a_malformed_body(env) -> None:  # type: ignore[no-untyped-def]
+    rid = env.run()
+    for content in (b"{", b'{"batch_no":"x"}', b"[]", b""):
+        r = env.client.post(f"/v1/runs/{rid}/events", content=content, headers={"content-type": "application/json"})
+        assert r.status_code == 401 and r.json()["code"] == "unauthenticated"
+        r = env.client.post(f"/v1/runs/{rid}/events", content=content, headers={"content-type": "application/json", "authorization": "Bearer junk"})
+        assert r.status_code == 401

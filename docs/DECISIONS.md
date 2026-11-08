@@ -109,6 +109,32 @@ Entry format for charter decisions: ID, context, options, choice, reason, how to
 
 **M4-12 Run records live behind a `RunRepository` interface.** The in-memory implementation serves tests and development; the Postgres implementation comes with the API (M6), which owns run creation.
 
+## M5 sandbox and orchestrator (2026-11-08)
+
+**M5-1 DEVIATION: hardened Docker instead of gVisor/Firecracker.** `runsc` is not installed and cannot be (no sudo). Each run gets one container: non-root (10001), read-only root, tmpfs `/tmp` (noexec,nosuid,nodev), all caps dropped, `no-new-privileges`, 1 vCPU / 1 GB (swap equal) / 128 pids, no volumes, no log driver, `--init`. `SandboxResources.runtime="runsc"` switches gVisor on with no other change. REVIEW: a shared-kernel container is a weaker boundary; gVisor/Firecracker is required before any public launch (LAUNCH.md).
+
+**M5-2 Egress = internal Docker network + allowlist proxy.** Sandboxes sit on an `--internal` network with no route out; the only reachable host is `services/egressproxy` (CONNECT for the provider, plain HTTP forwarding for ingest). Exact host:port allowlist, no wildcards; names resolved by the proxy and only vetted addresses dialled (no rebinding); the provider entry refuses private/loopback/link-local resolution; bounded heads, idle time, connections, bytes. The orchestrator refuses to start a run on a network that is not internal (fail closed; tested against the default bridge).
+
+**M5-3 Key delivery.** The job spec (with the key) goes to the container's stdin only: never argv, env, labels or volumes (checked with `docker inspect`, `docker top` and `/proc/1/environ` in a real container). The orchestrator holds the key in a `KeyBox` (memory only), takes it once while serialising the job, and discards it when the run ends, expires (10 min queue TTL) or is cancelled. Python cannot zero string bytes; dropping every reference and never persisting it is the achievable guarantee.
+
+**M5-4 Heartbeat and deadlines.** Worker prints `{"hb":n}`; silence >30 s after the first beat, no beat within 60 s of start, or the wall cap + 30 s grace kills the container (`docker kill` + process kill + forced removal confirmed absent). Worker output is parsed as a closed set of line shapes and bounded (4 KB/line); everything else is counted and dropped.
+
+**M5-5 Finalisation.** After the sandbox ends the orchestrator asks ingest for the run's status; if the worker did not reach a final state it writes `failed` (reason: kill reason, worker `fatal` type, or exit code) or `killed` (admin), then closes the run (bundle built). Container removal always runs.
+
+**M5-6 Orchestrator API is internal, bearer-token authenticated (DEVIATION from "internal mTLS", REVIEW).** Authentication is middleware that runs before routing/body parsing (unauthenticated callers get 401 and learn nothing about the schema). mTLS needs certificate infrastructure that does not exist locally; the app must only be exposed on an internal network. Same pre-routing auth fix applied to ingest.
+
+**M5-7 Server maxima** (`ServerLimits`) bound every request's caps (`caps_exceed_limit`); admission limits: 1 run per user, 2 per IP, 8 global, queue 32, breaker with required reason, all audited.
+
+**M5-8 Orchestrator and worker number ingest batches separately** (per scope), so neither can desynchronise the other; the orchestrator resyncs its counter from ingest's status.
+
+**M5-9 Docker hygiene.** All objects are labelled/named `memorylab`; cleanup acts only on exact container names built from a validated run id (another project's names are refused). The daemon on this machine hosts other projects; none were touched.
+
+**M5-10 Heartbeat-timeout regression.** `test_a_sandbox_that_stops_heartbeating_is_killed_within_the_timeout_on_the_real_clock` runs the supervisor in a thread with a join deadline, so a missing check fails rather than hangs. Verified by stubbing the check (`elif False:`): it and the fake-clock test fail; restored, all pass.
+
+**Process: local, reversible installs are within the charter** (owner instruction). They are decided without asking and logged here.
+
+**M6-0 Supabase CLI installed locally** (`~/.local/bin/supabase`, user-level, no sudo) to run the local Supabase stack in Docker. RLS tests need `auth.uid()`, so M6 is not built on plain Postgres.
+
 ## Open (not decided here)
 
 - Real public game and its RAM map (spec decision #1; Option A track).

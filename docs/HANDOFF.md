@@ -8,7 +8,8 @@ Current state, updated at every milestone.
 - M3 agent loop, Anthropic adapter (mock-tested only), presets, detectors implemented.
 - M4 `runlog` (events, lifecycle, redaction, store, segmented log, manifest, bundle, replay/verify, client sinks) and `services/ingest` implemented.
 - Python is pinned to 3.14 (stdlib zstd). Packages: `packages/labharness`, `packages/runlog`, `services/ingest`.
-- Next: M5 sandbox and orchestrator.
+- M5: `services/egressproxy`, `services/worker`, `services/orchestrator`, `infra/docker` (images `memorylab-worker:dev`, `memorylab-egress:dev`; build with `infra/docker/build.sh`). Docker integration tests run when the images exist (they only touch `memorylab`-labelled objects).
+- Next: M6 API and auth (needs local Supabase: check Docker availability).
 
 ## How to run
 ```bash

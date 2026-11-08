@@ -6,7 +6,7 @@ import secrets
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -91,6 +91,22 @@ def create_app(service: IngestService) -> FastAPI:
             raise Unauthenticated("missing bearer token")
         return service.authenticate(token, run_id)
 
+    def authed(request: Request) -> Claims:
+        claims: Claims = request.state.claims  # set by the auth middleware below
+        return claims
+
+    @app.middleware("http")
+    async def authenticate_first(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+        """Authentication runs before routing and body parsing, so an unauthenticated caller can learn
+        nothing from validation errors (FastAPI parses bodies before it resolves dependencies)."""
+        parts = request.url.path.split("/")
+        if len(parts) >= 5 and parts[1] == "v1" and parts[2] == "runs":
+            try:
+                request.state.claims = claims_for(request, parts[3])
+            except IngestError as exc:
+                return problem(exc.status, exc.code, exc.detail[:200])
+        return await call_next(request)
+
     @app.exception_handler(IngestError)
     async def ingest_error(_: Request, exc: IngestError) -> JSONResponse:
         return problem(exc.status, exc.code, exc.detail[:200])
@@ -118,21 +134,18 @@ def create_app(service: IngestService) -> FastAPI:
         return {"status": "ok"}
 
     @app.post("/v1/runs/{run_id}/events")
-    async def post_events(run_id: str, body: BatchIn, request: Request) -> dict[str, Any]:
-        claims = claims_for(request, run_id)
+    async def post_events(run_id: str, body: BatchIn, claims: Claims = Depends(authed)) -> dict[str, Any]:  # noqa: B008
         return service.append(claims, run_id, body.batch_no, [e.model_dump() for e in body.events])
 
     @app.put("/v1/runs/{run_id}/frames/{step}")
-    async def put_frame(run_id: str, step: int, request: Request) -> dict[str, bool]:
-        claims = claims_for(request, run_id)
+    async def put_frame(run_id: str, step: int, request: Request, claims: Claims = Depends(authed)) -> dict[str, bool]:  # noqa: B008
         if request.headers.get("content-type", "").split(";")[0] != "image/png":
             raise Invalid("content-type must be image/png")
         service.put_frame(claims, run_id, step, await request.body())
         return {"ok": True}
 
     @app.put("/v1/runs/{run_id}/manifest")
-    async def put_manifest(run_id: str, request: Request) -> dict[str, bool]:
-        claims = claims_for(request, run_id)
+    async def put_manifest(run_id: str, request: Request, claims: Claims = Depends(authed)) -> dict[str, bool]:  # noqa: B008
         try:
             manifest = await request.json()
         except ValueError:
@@ -142,8 +155,12 @@ def create_app(service: IngestService) -> FastAPI:
         service.put_manifest(claims, run_id, manifest)
         return {"sealed": True}
 
+    @app.get("/v1/runs/{run_id}/status")
+    async def status(run_id: str, claims: Claims = Depends(authed)) -> dict[str, Any]:  # noqa: B008
+        return service.run_status(claims, run_id)
+
     @app.post("/v1/runs/{run_id}/close")
-    async def close(run_id: str, request: Request) -> dict[str, Any]:
-        return service.close_run(claims_for(request, run_id), run_id)
+    async def close(run_id: str, claims: Claims = Depends(authed)) -> dict[str, Any]:  # noqa: B008
+        return service.close_run(claims, run_id)
 
     return app

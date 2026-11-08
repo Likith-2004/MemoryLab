@@ -1,6 +1,6 @@
 # Local gate commands. Everything runs on this machine; nothing is deployed.
 BIN := $(CURDIR)/.venv/bin
-PKGS := packages/labharness packages/runlog services/ingest
+PKGS := packages/labharness packages/runlog services/ingest services/egressproxy services/worker services/orchestrator
 
 .PHONY: sync test lint secrets gate
 sync:

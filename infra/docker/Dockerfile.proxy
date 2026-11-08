@@ -1,0 +1,14 @@
+# syntax=docker/dockerfile:1
+# Egress allowlist proxy: the only way out of the sandbox network. Standard library only.
+FROM python:3.14-slim AS build
+WORKDIR /src
+COPY services/egressproxy ./services/egressproxy
+RUN pip install --no-cache-dir --no-deps --prefix=/install ./services/egressproxy
+
+FROM python:3.14-slim
+LABEL memorylab.owner="memorylab" memorylab.role="egress-proxy"
+RUN groupadd --gid 10002 egress && useradd --uid 10002 --gid 10002 --no-create-home --shell /usr/sbin/nologin egress
+COPY --from=build /install /usr/local
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+USER 10002:10002
+ENTRYPOINT ["egressproxy"]

@@ -49,6 +49,7 @@ BASE_URL = f"https://{PROVIDER_HOSTS['anthropic']}"
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_RETRY_DELAY_S = 30.0
 _SAFE_TYPE = re.compile(r"[a-z_]{1,40}")
+_PROXY = re.compile(r"http://[A-Za-z0-9.\-]{1,253}:[0-9]{1,5}")
 
 
 class AnthropicProvider:
@@ -65,6 +66,7 @@ class AnthropicProvider:
         monotonic: Callable[[], float] = time.monotonic,
         jitter: Callable[[], float] = random.random,
         cache_system_prompt: bool = True,
+        proxy: str | None = None,
     ) -> None:
         if not isinstance(key, SecretKey):
             raise TypeError("key must be a SecretKey")
@@ -76,8 +78,10 @@ class AnthropicProvider:
         self._max_retries = max_retries
         self._sleep, self._monotonic, self._jitter = sleep, monotonic, jitter
         self._cache_system = cache_system_prompt
+        if proxy is not None and not _PROXY.fullmatch(proxy):
+            raise ValueError("proxy must look like http://host:port (no credentials, no path)")
         self._client = httpx.Client(
-            base_url=BASE_URL, transport=transport, follow_redirects=False, trust_env=False,
+            base_url=BASE_URL, transport=transport, follow_redirects=False, trust_env=False, proxy=proxy,
             limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
         )
 

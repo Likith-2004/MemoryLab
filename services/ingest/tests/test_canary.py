@@ -78,9 +78,8 @@ def run_leaky_loop(tmp_path, caplog, *, key: str, worker_redacts: bool):  # type
     redactor = Redactor([key])
     worker_token = SecretKey(issue_token(SECRET, run_id, "worker", 600, env.now[0]))
     sink = HttpEventSink(env.client, run_id, worker_token, batch_size=4)
-    # batch 1 is the orchestrator's `starting`; the worker's sink continues from batch 2
+    # the orchestrator and the worker number their batches independently (both start at 1)
     assert env.post(run_id, 1, [{"type": "run.state", "step": 0, "data": {"state": "starting"}}], "orchestrator").status_code == 200
-    sink._batch_no = 2
     script = [
         ScriptedStep((("press", {"buttons": ["Right"], "hold_frames": 1}),), f"I think the key is {key}", Usage(80, 20)),
         ScriptedStep((("mem_write", {"path": "notes/k.md", "content": f"remember {key}"}),), "", Usage(80, 20)),

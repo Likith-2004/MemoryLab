@@ -76,6 +76,10 @@ state; `seq` and `ts` are assigned by ingest, never by clients; batches are idem
 retries cannot duplicate; byte/event/frame quotas and a hard body limit (413, also for chunked bodies)
 bound resource use; validation errors never echo input; internal errors return an opaque incident id.
 
+## U-8 Sandbox and egress (M5)
+
+Verified in a real container (`services/orchestrator/tests/test_docker.py`): uid 10001, empty effective capabilities, `NoNewPrivs`, read-only root, noexec tmpfs, no docker socket, no secret-like env vars; no direct TCP to 1.1.1.1:443, 8.8.8.8:53 or the gateway; no DNS; through the proxy `example.com`, `api.anthropic.com` (not allowlisted in this test) and raw IPs get 403 while the allowlisted ingest gets 200; a fork bomb stops below the pids limit; a 900 MB allocation under a 128 MB limit is OOM-killed (137); missed heartbeats kill and remove the container. NOT VERIFIED: gVisor isolation (not installed), egress to the real provider host (no key), host-level firewalling. See DECISIONS M5-1.
+
 ## U-2 Dependency attack surface
 
 `pysdl2-dll` bundles image/audio codec libraries that the null-window harness never uses
