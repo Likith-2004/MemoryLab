@@ -14,7 +14,8 @@ class UpstreamError(Exception):
 
 
 class SubmitUnknown(Exception):
-    """The submit may or may not have been accepted: the request was (or may have been) sent and no answer came
+    """The call may or may not have taken effect (also raised for kill and breaker, whose audit outcome is then
+    `unknown`). For a submit: the run may or may not have been accepted: the request was (or may have been) sent and no answer came
     back. The caller must neither abandon the run nor refund the quota; the orchestrator is asked to kill it."""
 
 
@@ -70,11 +71,12 @@ class HttpOrchestrator:
         return str(self._call("POST", f"/internal/runs/{run_id}/stop", {"actor": actor}).get("result", ""))
 
     def kill(self, run_id: str, actor: str, reason: str) -> str:
-        return str(self._call("POST", f"/internal/runs/{run_id}/kill", {"actor": actor, "reason": reason})
-                   .get("result", ""))
+        return str(self._call("POST", f"/internal/runs/{run_id}/kill", {"actor": actor, "reason": reason},
+                              sent_means_unknown=True).get("result", ""))
 
     def snapshot(self) -> dict[str, Any]:
         return self._call("GET", "/internal/runs")
 
     def breaker(self, open_: bool, actor: str, reason: str) -> dict[str, Any]:
-        return self._call("POST", "/internal/breaker", {"open": open_, "actor": actor, "reason": reason})
+        return self._call("POST", "/internal/breaker", {"open": open_, "actor": actor, "reason": reason},
+                          sent_means_unknown=True)

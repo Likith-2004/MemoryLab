@@ -138,6 +138,7 @@ class FakeOrchestrator:
     breaker_calls: list[tuple[bool, str, str]] = field(default_factory=list)
     fail_with: Exception | None = None
     kill_fail: Exception | None = None
+    breaker_fail: Exception | None = None
     delegate: Any = None                 # a real HttpOrchestrator pointed at a test server, for transport-level cases
 
     def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -164,6 +165,8 @@ class FakeOrchestrator:
         return {"running": [], "queued": []}
 
     def breaker(self, open_: bool, actor: str, reason: str) -> dict[str, Any]:
+        if self.breaker_fail:
+            raise self.breaker_fail
         self.breaker_calls.append((open_, actor, reason))
         return {"open": open_}
 

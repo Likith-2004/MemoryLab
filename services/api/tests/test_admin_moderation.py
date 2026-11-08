@@ -314,3 +314,125 @@ def test_the_audit_log_is_readable_by_admins_only(env: Env) -> None:
             c.execute("set local role authenticated")
             n = c.execute("select count(*) from public.audit_log where actor_id = %s", (admin,)).fetchone()[0]  # type: ignore[index]
             assert (n >= 1) == bool(expect)
+
+
+# ---------------------------------------------------------------- outcome of external admin actions
+
+def outcomes(env: Env, actor: str) -> list[tuple[str, str]]:
+    return [(r["action"], r["outcome"]) for r in env.admin.execute(
+        "select action, outcome from public.audit_log where actor_id = %s order by id", (actor,)).fetchall()]
+
+
+def test_a_successful_kill_and_breaker_end_with_outcome_ok(env: Env) -> None:
+    admin = env.user("admin")
+    h = bearer(admin)
+    env.client.post(f"/api/v1/admin/runs/{uuid.uuid4()}/kill", json={"reason": "r"}, headers=h)
+    env.client.post("/api/v1/admin/breaker", json={"open": True, "reason": "r"}, headers=h)
+    assert outcomes(env, admin) == [("run.kill", "ok"), ("breaker.open", "ok")]
+
+
+def test_a_kill_or_breaker_that_fails_downstream_is_recorded_as_failed(env: Env) -> None:
+    admin = env.user("admin")
+    h = bearer(admin)
+    env.orch.kill_fail = UpstreamError(503, "capacity_full", 30)
+    assert env.client.post(f"/api/v1/admin/runs/{uuid.uuid4()}/kill", json={"reason": "r"}, headers=h).status_code == 503
+    env.orch.breaker_fail = UpstreamError(502, "internal")
+    assert env.client.post("/api/v1/admin/breaker", json={"open": False, "reason": "r"}, headers=h).status_code == 502
+    env.orch.kill_fail = RuntimeError("boom")
+    assert env.client.post(f"/api/v1/admin/runs/{uuid.uuid4()}/kill", json={"reason": "r"}, headers=h).status_code == 500
+    assert outcomes(env, admin) == [("run.kill", "failed"), ("breaker.close", "failed"), ("run.kill", "failed")]
+
+
+def test_a_timeout_after_the_request_was_sent_is_recorded_as_unknown(env: Env) -> None:
+    from api.orchestrator_client import SubmitUnknown
+    admin = env.user("admin")
+    h = bearer(admin)
+    env.orch.kill_fail = SubmitUnknown()
+    r = env.client.post(f"/api/v1/admin/runs/{uuid.uuid4()}/kill", json={"reason": "r"}, headers=h)
+    assert (r.status_code, r.json()["code"], r.headers["retry-after"]) == (503, "internal", "30")
+    env.orch.breaker_fail = SubmitUnknown()
+    assert env.client.post("/api/v1/admin/breaker", json={"open": True, "reason": "r"}, headers=h).status_code == 503
+    assert outcomes(env, admin) == [("run.kill", "unknown"), ("breaker.open", "unknown")]
+
+
+def test_a_real_read_timeout_on_kill_is_unknown_and_a_refused_connection_is_failed(make_env: Any) -> None:
+    from api.orchestrator_client import HttpOrchestrator
+    from test_submit_unknown import Server
+    slow = Server(control_delay_s=1.0)
+    try:
+        env: Env = make_env()
+        admin, run = env.user("admin"), str(uuid.uuid4())
+        h = bearer(admin)
+        env.orch.delegate = HttpOrchestrator(slow.url, b"o" * 40, timeout_s=0.3)
+        assert env.client.post(f"/api/v1/admin/runs/{run}/kill", json={"reason": "r"}, headers=h).status_code == 503
+        env.orch.delegate = HttpOrchestrator("http://127.0.0.1:1", b"o" * 40, timeout_s=0.3)
+        assert env.client.post(f"/api/v1/admin/runs/{run}/kill", json={"reason": "r"}, headers=h).status_code == 503
+        assert outcomes(env, admin) == [("run.kill", "unknown"), ("run.kill", "failed")]
+        assert slow.killed and slow.killed[0]["reason"] == "r"                       # the first one did reach it
+    finally:
+        slow.close()
+
+
+def test_the_audit_log_is_append_only_and_the_outcome_can_be_set_once(env: Env) -> None:
+    admin = env.user("admin")
+    env.client.post(f"/api/v1/admin/runs/{uuid.uuid4()}/kill", json={"reason": "r"}, headers=bearer(admin))
+    aid = env.admin.execute("select id from public.audit_log where actor_id = %s", (admin,)).fetchone()["id"]  # type: ignore[index]
+    for sql in ("update public.audit_log set outcome = 'failed' where id = %s",          # already closed out
+                "update public.audit_log set reason = 'rewritten' where id = %s", "delete from public.audit_log where id = %s"):
+        with pytest.raises(psycopg.errors.RaiseException, match="audit_append_only"):
+            env.admin.execute(sql, (aid,))
+    env.admin.execute("insert into public.audit_log (actor_id, action, outcome) values (%s, 'x', 'requested')", (admin,))
+    open_id = env.admin.execute("select max(id) m from public.audit_log").fetchone()["m"]  # type: ignore[index]
+    for bad in ("requested", "bogus"):
+        with pytest.raises((psycopg.errors.RaiseException, psycopg.errors.CheckViolation)):
+            env.admin.execute("update public.audit_log set outcome = %s where id = %s", (bad, open_id))
+    env.admin.execute("update public.audit_log set outcome = 'unknown' where id = %s", (open_id,))
+
+
+def test_only_the_requesting_admin_can_close_an_audit_row(env: Env) -> None:
+    import json
+
+    from conftest import API_DB_URL
+    a, b = env.user("admin"), env.user("admin")
+    env.admin.execute("insert into public.audit_log (actor_id, action, outcome) values (%s, 'x', 'requested')", (a,))
+    aid = env.admin.execute("select max(id) m from public.audit_log").fetchone()["m"]  # type: ignore[index]
+    for who, err in ((b, "audit_not_found"), (env.user(), "not_admin")):
+        with psycopg.connect(API_DB_URL) as c:
+            c.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps({"sub": who, "role": "authenticated"}),))
+            c.execute("set local role authenticated")
+            with pytest.raises(psycopg.errors.RaiseException, match=err):
+                c.execute("select api_private.admin_audit_outcome(%s, 'ok')", (aid,))
+
+
+def test_the_request_is_already_committed_while_the_orchestrator_is_called(env: Env) -> None:
+    """A process that dies during the call must leave a `requested` row behind."""
+    admin = env.user("admin")
+    seen: list[list[tuple[str, str]]] = []
+
+    def kill(run_id: str, actor: str, reason: str) -> str:
+        seen.append(outcomes(env, admin))                    # a different connection: only committed rows are visible
+        return "killed"
+
+    def breaker(open_: bool, actor: str, reason: str) -> dict[str, Any]:
+        seen.append(outcomes(env, admin))
+        return {"open": open_}
+
+    env.orch.kill, env.orch.breaker = kill, breaker  # type: ignore[method-assign]
+    env.client.post(f"/api/v1/admin/runs/{uuid.uuid4()}/kill", json={"reason": "r"}, headers=bearer(admin))
+    env.client.post("/api/v1/admin/breaker", json={"open": True, "reason": "r"}, headers=bearer(admin))
+    assert seen == [[("run.kill", "requested")], [("run.kill", "ok"), ("breaker.open", "requested")]]
+
+
+def test_a_real_read_timeout_on_the_breaker_is_unknown(make_env: Any) -> None:
+    from api.orchestrator_client import HttpOrchestrator
+    from test_submit_unknown import Server
+    slow = Server(control_delay_s=1.0)
+    try:
+        env: Env = make_env()
+        admin = env.user("admin")
+        env.orch.delegate = HttpOrchestrator(slow.url, b"o" * 40, timeout_s=0.3)
+        env.orch.breaker = lambda o, a, r: env.orch.delegate.breaker(o, a, r)  # type: ignore[method-assign]
+        assert env.client.post("/api/v1/admin/breaker", json={"open": True, "reason": "r"}, headers=bearer(admin)).status_code == 503
+        assert outcomes(env, admin) == [("breaker.open", "unknown")]
+    finally:
+        slow.close()

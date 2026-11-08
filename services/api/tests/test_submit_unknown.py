@@ -18,8 +18,8 @@ TOKEN = b"o" * 40
 
 
 class Server:
-    def __init__(self, delay_s: float = 0.0) -> None:
-        self.delay_s = delay_s
+    def __init__(self, delay_s: float = 0.0, control_delay_s: float = 0.0) -> None:
+        self.delay_s, self.control_delay_s = delay_s, control_delay_s
         self.submitted: list[dict[str, Any]] = []
         self.killed: list[dict[str, Any]] = []
         outer = self
@@ -33,7 +33,8 @@ class Server:
                     out = {"run_id": payload["run_id"], "status": "queued"}
                 else:
                     outer.killed.append({"path": self.path, **payload})
-                    out = {"result": "killed"}
+                    time.sleep(outer.control_delay_s)
+                    out = {"result": "killed"} if "kill" in self.path else {"open": payload.get("open")}
                 data = json.dumps(out).encode()
                 try:
                     self.send_response(202 if self.path == "/internal/runs" else 200)

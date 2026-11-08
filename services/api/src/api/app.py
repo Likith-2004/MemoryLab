@@ -884,18 +884,37 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
 
     # ------------------------------------------------------------ admin
 
-    def audit(conn: Conn, admin: User, request: Request, action: str, target: str, reason: str) -> None:
-        """Record an admin action before it is taken, and commit it: an attempt that then fails is still on record, and
-        an action whose audit row cannot be written does not happen."""
+    def audited(conn: Conn, admin: User, request: Request, action: str, target: str, reason: str,
+                act: Callable[[], Any]) -> Any:
+        """Record the request (committed as `requested` before anything is attempted: an action whose audit row cannot
+        be written does not happen), run `act`, then record its outcome: ok, failed, or unknown (a timeout after the
+        request was sent: it may have taken effect)."""
         try:
-            conn.execute("select api_private.admin_audit(%s, %s, %s, %s)",
-                         (action, target, reason, _ip_hash(client_ip(request), salt)))
+            row = conn.execute("select api_private.admin_audit(%s, %s, %s, %s) as id",
+                               (action, target, reason, _ip_hash(client_ip(request), salt))).fetchone()
         except RaiseException as exc:
             if "reason_required" in str(exc):
                 raise ApiError(422, "validation_failed", "a reason is required") from None
             raise
+        audit_id = row["id"]  # type: ignore[index]
         conn.commit()
         Database.apply_identity(conn, admin)
+
+        def outcome(value: str) -> None:
+            conn.execute("select api_private.admin_audit_outcome(%s, %s)", (audit_id, value))
+            conn.commit()
+            Database.apply_identity(conn, admin)
+
+        try:
+            result = act()
+        except SubmitUnknown:
+            outcome("unknown")
+            raise ApiError(503, "internal", "The result is unknown; check before retrying", {"retry-after": "30"}) from None
+        except BaseException:
+            outcome("failed")
+            raise
+        outcome("ok")
+        return result
 
     @app.get(f"{API}/admin/runs")
     def admin_runs(_: Admin) -> dict[str, Any]:
@@ -904,13 +923,14 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     @app.post(API + "/admin/runs/{run_id}/kill", dependencies=[WriteGuard])
     def admin_kill(run_id: str, body: AdminKillIn, admin: Admin, request: Request, conn: Sess) -> dict[str, Any]:
         target = _uuid(run_id)
-        audit(conn, admin, request, "run.kill", target, body.reason)
-        return {"result": orchestrator.kill(target, admin.id, body.reason)}
+        return {"result": audited(conn, admin, request, "run.kill", target, body.reason,
+                                  lambda: orchestrator.kill(target, admin.id, body.reason))}
 
     @app.post(f"{API}/admin/breaker", dependencies=[WriteGuard])
     def admin_breaker(body: BreakerIn, admin: Admin, request: Request, conn: Sess) -> dict[str, Any]:
-        audit(conn, admin, request, "breaker.open" if body.open else "breaker.close", "global", body.reason)
-        return orchestrator.breaker(body.open, admin.id, body.reason)
+        state: dict[str, Any] = audited(conn, admin, request, "breaker.open" if body.open else "breaker.close", "global",
+                                        body.reason, lambda: orchestrator.breaker(body.open, admin.id, body.reason))
+        return state
 
     @app.get(f"{API}/admin/reports")
     def admin_reports(_: Admin, conn: Sess, status: Annotated[Literal["open", "actioned", "dismissed", "all"], Query()] = "open",
