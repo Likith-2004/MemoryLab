@@ -2,11 +2,13 @@
 through the caller's own database role so RLS applies; run-scoped routes share one visibility
 dependency that answers 404 for both missing and forbidden runs (no existence oracle)."""
 
+import asyncio
 import bisect
 import difflib
 import hashlib
 import io
 import ipaddress
+import json
 import logging
 import re
 import secrets
@@ -16,7 +18,8 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, Path, Query, Request, Response
+from fastapi import Depends, FastAPI, Path, Query, Request, Response, WebSocket
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from ingest.app import BodyLimit, problem
@@ -38,6 +41,14 @@ from .limits import RateLimiter
 from .orchestrator_client import KeyValidator, OrchestratorClient, SubmitUnknown, UpstreamError
 from .settings import Settings
 from .signing import LocalUrlSigner, UrlSigner
+from .stream import (
+    MAX_CLIENT_MESSAGE_BYTES,
+    TICKET_TTL_S,
+    SocketCounter,
+    new_ticket,
+    ticket_hash,
+    well_formed,
+)
 
 log = logging.getLogger("api")
 log.addFilter(ScrubFilter())
@@ -580,6 +591,25 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
                             (run["id"],)).fetchall()
         return [_jsonable(r) for r in rows]
 
+    @app.post(API + "/runs/{run_id}/stream-ticket", dependencies=[Guard])
+    def stream_ticket(run: Run, request: Request, user: Annotated[User | None, Depends(bearer)],
+                      conn: Sess) -> dict[str, Any]:
+        """A single-use, 60 s ticket for the WebSocket, bound to this run and to the caller (anonymous for a public or
+        unlisted run). It keeps JWTs out of WebSocket URLs."""
+        who = user.id if user else f"ip:{_ip_hash(client_ip(request), salt)}"
+        if not limiter.allow(("ticket", who), 20, 60):
+            raise ApiError(429, "rate_limited", "Too many requests", {"retry-after": "60"})
+        ticket = new_ticket()
+        try:
+            conn.execute("select api_private.issue_stream_ticket(%s, %s)", (run["id"], ticket_hash(ticket)))
+        except RaiseException as exc:
+            if "run_not_found" in str(exc):
+                raise NotFound from None
+            if "account_erased" in str(exc):
+                raise Unauthenticated from None
+            raise
+        return {"ticket": ticket, "expires_in": TICKET_TTL_S, "path": f"/ws/runs/{run['id']}"}
+
     @app.get(API + "/runs/{run_id}/frames/{step}", dependencies=[Guard])
     def frame(run: Run, step: Annotated[int, Path(ge=0, le=1_000_000)]) -> Response:
         """302 to a 60 s signed URL for the nearest sampled frame at or before `step`; 404 if there is none."""
@@ -689,6 +719,132 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     def admin_breaker(body: BreakerIn, admin: Admin) -> dict[str, Any]:
         return orchestrator.breaker(body.open, admin.id, body.reason)
 
+    sockets = SocketCounter()
+
+    def redeem(ticket: str) -> tuple[str, str | None] | None:
+        """(run_id, user_id) if the ticket existed and had not expired; it is consumed either way."""
+        with db.session(None) as conn:
+            row = conn.execute("select run_id, user_id from api_private.redeem_stream_ticket(%s)",
+                               (ticket_hash(ticket),)).fetchone()
+        return None if row is None else (str(row["run_id"]), None if row["user_id"] is None else str(row["user_id"]))
+
+    def still_visible(run_id: str, user_id: str | None) -> bool:
+        """The viewer's own view of the run, evaluated now: a run made private or deleted since the ticket was issued
+        is gone for them."""
+        with db.session(None if user_id is None else User(user_id)) as conn:
+            return conn.execute("select 1 from api_private.get_visible_run(%s) where deleted_at is null",
+                                (run_id,)).fetchone() is not None
+
+    def read_events(run_id: str, after: int, limit: int) -> list[dict[str, Any]]:
+        if store is None:
+            return []
+        return [e.to_obj() for e in EventLogReader(store, run_id).read_page(after, limit)]
+
+    def frame_url(run_id: str, step: int) -> str | None:
+        if store is None or signer is None:
+            return None
+        prefix = f"runs/{run_id}/frames/"
+        steps = sorted(int(m.group(1)) for k in store.list(prefix) if (m := _FRAME_KEY.match(k)))
+        at = bisect.bisect_right(steps, step) - 1
+        return None if at < 0 else signer.sign_get(f"{prefix}{steps[at]:07d}.png", SIGNED_URL_TTL_S)
+
+    @app.websocket("/ws/runs/{run_id}")
+    async def ws_run(ws: WebSocket, run_id: str, ticket: str = "") -> None:
+        """Read-only live stream. Admission: Origin allowlist, a well-formed single-use ticket for this run, and the
+        viewer's own visibility of the run now. The client may send only {"t":"resume","after_seq":n} (at most 1 KB);
+        anything else closes the socket with 1008. Visibility is re-checked every heartbeat."""
+        try:
+            rid = str(uuid.UUID(run_id))
+        except ValueError:
+            await ws.close(code=1008)
+            return
+        if ws.headers.get("origin") not in settings.allowed_origins or not well_formed(ticket):
+            await ws.close(code=1008)
+            return
+        redeemed = await run_in_threadpool(redeem, ticket)
+        if redeemed is None or redeemed[0] != rid or not await run_in_threadpool(still_visible, rid, redeemed[1]):
+            await ws.close(code=1008)
+            return
+        viewer = redeemed[1] or f"ip:{_ip_hash(client_ip_ws(ws), salt)}"
+        if not sockets.acquire(rid, viewer):
+            await ws.close(code=1008)
+            return
+        try:
+            await ws.accept()
+            await _serve_socket(ws, rid, redeemed[1])
+        finally:
+            sockets.release(rid, viewer)
+
+    def client_ip_ws(ws: WebSocket) -> str:
+        peer = ws.client.host if ws.client else "unknown"
+        if settings.trusted_proxy_hops <= 0:
+            return peer
+        chain = [p.strip() for p in ws.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+        try:
+            return str(ipaddress.ip_address(chain[-settings.trusted_proxy_hops]))
+        except (IndexError, ValueError):
+            return peer
+
+    async def _serve_socket(ws: WebSocket, rid: str, user_id: str | None) -> None:
+        state = {"after": 0, "closing": False}
+
+        async def push() -> None:
+            last_beat = asyncio.get_running_loop().time()
+            while not state["closing"]:
+                sent = False
+                events = await run_in_threadpool(read_events, rid, state["after"], 200)
+                for obj in events:
+                    await ws.send_json({"t": "event", **obj})
+                    state["after"] = max(state["after"], int(obj["seq"]))
+                    sent = True
+                obs = [o for o in events if o["type"] == "obs"]
+                if obs:
+                    url = await run_in_threadpool(frame_url, rid, int(obs[-1]["step"]))
+                    if url is not None:
+                        await ws.send_json({"t": "frame", "step": int(obs[-1]["step"]), "url": url})
+                now = asyncio.get_running_loop().time()
+                if now - last_beat >= settings.ws_heartbeat_s:
+                    last_beat = now
+                    if not await run_in_threadpool(still_visible, rid, user_id):
+                        state["closing"] = True
+                        await ws.close(code=1008)
+                        return
+                    await ws.send_json({"t": "hb"})
+                if len(events) < 200 and not sent:
+                    await asyncio.sleep(settings.ws_poll_s)
+
+        async def listen() -> None:
+            while not state["closing"]:
+                message = await ws.receive()
+                if message["type"] == "websocket.disconnect":
+                    state["closing"] = True
+                    return
+                text = message.get("text")
+                if text is None:                                  # binary frames are not part of the protocol
+                    state["closing"] = True
+                    await ws.close(code=1008)
+                    return
+                if len(text.encode()) > MAX_CLIENT_MESSAGE_BYTES:
+                    state["closing"] = True
+                    await ws.close(code=1009)
+                    return
+                after = _resume(text)
+                if after is None:
+                    state["closing"] = True
+                    await ws.close(code=1008)
+                    return
+                state["after"] = after
+
+        pusher = asyncio.create_task(push())
+        try:
+            await listen()
+        except Exception:  # noqa: BLE001 - a socket error ends this socket only
+            state["closing"] = True
+        finally:
+            state["closing"] = True
+            pusher.cancel()
+            await asyncio.gather(pusher, return_exceptions=True)
+
     if isinstance(signer, LocalUrlSigner):
         local_signer: LocalUrlSigner = signer
 
@@ -713,6 +869,19 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
 
 
 # ---------------------------------------------------------------- helpers
+
+def _resume(text: str) -> int | None:
+    """The one message a client may send: {"t": "resume", "after_seq": n}. None for anything else."""
+    try:
+        msg = json.loads(text)
+    except ValueError:
+        return None
+    if (not isinstance(msg, dict) or set(msg) != {"t", "after_seq"} or msg["t"] != "resume"
+            or isinstance(msg["after_seq"], bool) or not isinstance(msg["after_seq"], int)
+            or not 0 <= msg["after_seq"] <= 2**53):
+        return None
+    return int(msg["after_seq"])
+
 
 def _bundle_is_clean(data: bytes) -> bool:
     """The export's redaction scan, re-run: no file inside the zip may contain credential-like text. A zip that cannot

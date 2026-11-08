@@ -56,8 +56,8 @@ class World:
 
     def user(self) -> str:
         uid = str(uuid.uuid4())
-        self.conn.execute("insert into auth.users (id, email, instance_id, aud, role) values (%s, %s, "
-                          "'00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')",
+        self.conn.execute("insert into auth.users (id, email, instance_id, aud, role, created_at, updated_at, confirmation_token, recovery_token, email_change_token_new, email_change) values (%s, %s, "
+                          "'00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', now(), now(), '', '', '', '')",
                           (uid, f"{uid}@example.test"))
         self.users.append(uid)
         return uid

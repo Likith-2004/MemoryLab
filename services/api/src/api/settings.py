@@ -25,6 +25,9 @@ class Settings:
     write_limit_per_min: int = 30
     blob_signing_secret: bytes = field(default=b"", repr=False)   # dev-only local signer; production presigns from S3
     public_api_url: str = "http://127.0.0.1:8000"
+    allowed_origins: tuple[str, ...] = ()       # WebSocket Origin allowlist; empty = no socket is accepted
+    ws_poll_s: float = 1.0                      # how often a socket looks for new events
+    ws_heartbeat_s: float = 15.0                # heartbeat and visibility re-check period
     trusted_proxy_hops: int = 0       # proxies in front of the API whose X-Forwarded-For entry is trusted
 
     @classmethod
@@ -41,5 +44,6 @@ class Settings:
             accounts_token=os.environ.get("MEMORYLAB_ACCOUNTS_TOKEN", "").encode(),
             blob_signing_secret=os.environ.get("MEMORYLAB_BLOB_SIGNING_SECRET", "").encode(),
             public_api_url=os.environ.get("MEMORYLAB_PUBLIC_API_URL", cls.public_api_url),
+            allowed_origins=tuple(o for o in os.environ.get("MEMORYLAB_ALLOWED_ORIGINS", "").split(",") if o),
             trusted_proxy_hops=int(os.environ.get("MEMORYLAB_TRUSTED_PROXY_HOPS", "0")),
         )

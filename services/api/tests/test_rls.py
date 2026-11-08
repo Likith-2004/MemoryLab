@@ -8,7 +8,7 @@ import pytest
 from conftest import Db
 
 TABLES = ["profiles", "games", "start_states", "presets", "run_configs", "runs", "run_events_index",
-          "memory_files", "checkpoints", "run_scores", "experiments", "audit_log", "reports", "run_ingest_state"]
+          "memory_files", "checkpoints", "run_scores", "experiments", "audit_log", "reports", "run_ingest_state", "stream_tickets"]
 
 
 def test_every_public_table_has_forced_rls(db: Db) -> None:
@@ -397,22 +397,24 @@ def test_get_visible_run_returns_the_link_only_rows_the_runs_table_does_not_list
                         (other, (False, True, True, False)), (None, (False, True, True, False))):
         db.as_(who)
         assert (got(priv), got(unl), got(pub), got(gone)) == expect, who
-    db.as_(None)
-    assert {str(r["id"]) for r in db.q("select id from public.runs")} == {pub}      # the table lists public only
-    db.as_(other)
-    assert {str(r["id"]) for r in db.q("select id from public.runs")} == {pub}
+    for who in (None, other):                                                       # the table lists public only
+        db.as_(who)
+        listed = {str(r["id"]) for r in db.q("select id from public.runs")}
+        assert pub in listed and not listed & {priv, unl, gone}
     assert db.q("select id from api_private.get_visible_run(gen_random_uuid())") == []
 
 
 def test_unlisted_run_configs_are_not_listable_through_the_data_api(db: Db) -> None:
     owner, other = db.new_user(), db.new_user()
-    unl = db.make_run(owner, "unlisted")
-    db.as_(None)
-    assert db.q("select 1 from public.run_configs") == []
-    db.as_(other)
-    assert db.q("select 1 from public.run_configs") == []
+    unl, pub = db.make_run(owner, "unlisted"), db.make_run(owner, "public")
+    db.as_service()
+    cfg = {r: db.q("select config_id from public.runs where id = %s", r)[0]["config_id"] for r in (unl, pub)}
+    for who in (None, other):
+        db.as_(who)
+        listed = {r["id"] for r in db.q("select id from public.run_configs")}
+        assert cfg[pub] in listed and cfg[unl] not in listed
     db.as_(owner)
-    assert len(db.q("select 1 from public.run_configs")) == 1 and unl
+    assert {cfg[unl], cfg[pub]} <= {r["id"] for r in db.q("select id from public.run_configs")}
 
 
 CHILDREN = ["run_events_index", "memory_files", "checkpoints", "run_scores"]
@@ -503,4 +505,38 @@ def test_the_fork_readers_follow_get_visible_run(db: Db) -> None:
     db.x("savepoint s")
     with pytest.raises(psycopg.errors.InsufficientPrivilege):    # forking needs a signed-in user: no anon execute
         db.q("select * from api_private.run_config(%s)", pub)
+    db.x("rollback to savepoint s")
+
+
+def test_stream_ticket_functions_check_visibility_and_the_account_and_consume_on_redeem(db: Db) -> None:
+    import hashlib
+    owner, other, ghost = db.new_user(), db.new_user(), db.new_user()
+    priv, pub = db.make_run(owner, "private"), db.make_run(owner, "public")
+    db.as_service()
+    db.x("update public.profiles set erased_at = now() where id = %s", ghost)
+    h = [hashlib.sha256(f"t{i}".encode()).hexdigest() for i in range(6)]
+
+    def issue(who: str | None, run: str, digest: str) -> None:
+        db.as_(who)
+        db.q("select api_private.issue_stream_ticket(%s, %s)", run, digest)
+
+    for who, run, digest in ((owner, priv, h[0]), (other, pub, h[1]), (None, pub, h[2])):
+        issue(who, run, digest)                                                     # allowed
+    for who, run, digest, err in ((other, priv, h[3], "run_not_found"), (None, priv, h[3], "run_not_found"),
+                                  (ghost, pub, h[4], "account_erased")):
+        db.x("savepoint s")
+        with pytest.raises(psycopg.errors.RaiseException, match=err):
+            issue(who, run, digest)
+        db.x("rollback to savepoint s")
+    db.as_service()
+    stored = {r["token_sha256"]: r["user_id"] for r in db.q("select token_sha256, user_id from public.stream_tickets")}
+    assert set(stored) == {h[0], h[1], h[2]} and str(stored[h[1]]) == other and stored[h[2]] is None
+    db.as_(None)
+    got = db.q("select * from api_private.redeem_stream_ticket(%s)", h[1])
+    assert [(str(r["run_id"]), str(r["user_id"])) for r in got] == [(pub, other)]
+    assert db.q("select * from api_private.redeem_stream_ticket(%s)", h[1]) == []        # once
+    db.as_(None)
+    db.x("savepoint s")
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):                              # not a table anyone can read
+        db.q("select * from public.stream_tickets")
     db.x("rollback to savepoint s")

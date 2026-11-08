@@ -50,8 +50,8 @@ class Db:
     def new_user(self, role: str = "user") -> str:
         uid = str(uuid.uuid4())
         self.conn.execute(
-            "insert into auth.users (id, email, instance_id, aud, role) "
-            "values (%s, %s, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')",
+            "insert into auth.users (id, email, instance_id, aud, role, created_at, updated_at, confirmation_token, recovery_token, email_change_token_new, email_change) "
+            "values (%s, %s, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', now(), now(), '', '', '', '')",
             (uid, f"{uid}@example.test"))
         if role == "admin":
             self.conn.execute("update public.profiles set role = 'admin' where id = %s", (uid,))
@@ -231,8 +231,8 @@ class Env:
     def user(self, role: str = "user") -> str:
         uid = str(uuid.uuid4())
         self.admin.execute(
-            "insert into auth.users (id, email, instance_id, aud, role) "
-            "values (%s, %s, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')",
+            "insert into auth.users (id, email, instance_id, aud, role, created_at, updated_at, confirmation_token, recovery_token, email_change_token_new, email_change) "
+            "values (%s, %s, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', now(), now(), '', '', '', '')",
             (uid, f"{uid}@example.test"))
         if role == "admin":
             self.admin.execute("update public.profiles set role = 'admin' where id = %s", (uid,))

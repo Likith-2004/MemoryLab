@@ -25,6 +25,7 @@ WRITES: list[tuple[str, str, Any]] = [
     ("DELETE", "/api/v1/runs/{run}", None),
     ("POST", "/api/v1/runs", "CREATE"),
     ("POST", "/api/v1/runs/{run}/fork", "FORK"),
+    ("POST", "/api/v1/runs/{run}/stream-ticket", None),
     ("DELETE", "/api/v1/me", {"confirm": "DELETE"}),
 ]
 
