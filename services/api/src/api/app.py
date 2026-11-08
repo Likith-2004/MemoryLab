@@ -36,9 +36,10 @@ from runlog.store import NotFound as StoreNotFound
 from runlog.store import ObjectStore
 
 from .accounts_client import AccountsClient, AccountsError
-from .auth import AuthGateway, AuthUnavailable, JwtVerifier, SessionChecker, Unauthenticated, User
+from .auth import AuthGateway, JwtVerifier, SessionChecker, Unauthenticated, User
 from .db import Conn, Database
 from .limits import RateLimiter
+from .mailjobs import MailJobs
 from .orchestrator_client import KeyValidator, OrchestratorClient, SubmitUnknown, UpstreamError
 from .settings import Settings
 from .signing import LocalUrlSigner, UrlSigner
@@ -256,7 +257,7 @@ class ApiError(Exception):
 
 def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orchestrator: OrchestratorClient,
                key_validator: KeyValidator, session_checker: SessionChecker, auth_gateway: AuthGateway,
-               accounts: AccountsClient, store: ObjectStore | None = None, signer: UrlSigner | None = None,
+               accounts: AccountsClient, store: ObjectStore | None = None, signer: UrlSigner | None = None, mail_jobs: MailJobs | None = None,
                clock: Callable[[], float] | None = None, ip_salt: bytes | None = None) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, title="memorylab-api")
     app.add_middleware(BodyLimit, max_bytes=MAX_BODY)
@@ -437,12 +438,16 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
         ip = _ip_hash(client_ip(request), salt)
         if not limiter.allow(("signup-ip", ip), settings.signup_per_ip_per_hour, 3600):
             raise ApiError(429, "rate_limited", "Too many attempts", {"retry-after": "3600"})
-        try:
-            if not auth_gateway.signup(body.email.lower(), body.password.get_secret_value()):
-                auth_gateway.recover(body.email.lower())
-        except AuthUnavailable:
-            raise ApiError(503, "internal", "Try again later", {"retry-after": "60"}) from None
+        email, password = body.email.lower(), body.password.get_secret_value()
+
+        def job() -> None:
+            if not auth_gateway.signup(email, password):
+                auth_gateway.recover(email)
+
+        mail.submit("signup", email, job)                         # password rules were checked by SignupIn (12..128 chars)
         return {"message": SIGNUP_MESSAGE}
+
+    mail = mail_jobs or MailJobs()
 
     def mail_endpoint(kind: str, send: Callable[[str], None]) -> Callable[[EmailIn, Request], dict[str, str]]:
         def handler(body: EmailIn, request: Request) -> dict[str, str]:
@@ -453,10 +458,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
             if not limiter.allow((f"{kind}-ip", ip), settings.signup_per_ip_per_hour, 3600) or \
                     not limiter.allow((f"{kind}-email", hashlib.sha256(email.encode()).hexdigest()), 5, 3600):
                 raise ApiError(429, "rate_limited", "Too many attempts", {"retry-after": "3600"})
-            try:
-                send(email)
-            except AuthUnavailable:
-                raise ApiError(503, "internal", "Try again later", {"retry-after": "60"}) from None
+            mail.submit(kind, email, lambda: send(email))       # after the answer: its duration says nothing about the address
             return {"message": SIGNUP_MESSAGE}
         return handler
 

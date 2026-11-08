@@ -1,12 +1,14 @@
 # ruff: noqa: F811  (imported fixtures are redefined as test parameters, which is how pytest injects them)
 """POST /auth/magic-link and /auth/recover: one answer for every address (GoTrue's own /otp tells known from unknown)."""
 
+import threading
 import time
 from typing import Any
 
 import httpx
 import pytest
 
+from api.mailjobs import MailJobs, address_tag
 from conftest import Env
 from test_gotrue import Auth, auth, real, real_factory, stack  # noqa: F401  (fixtures)
 
@@ -71,10 +73,10 @@ def test_the_limits_apply_per_ip_and_per_address_to_every_address_alike(make_env
 
 
 @pytest.mark.parametrize("path", PATHS)
-def test_503_only_when_the_auth_service_is_unavailable(env: Env, path: str) -> None:
+def test_an_unavailable_auth_service_is_not_visible_to_the_caller(env: Env, path: str) -> None:
     env.gateway.down = True
     r = env.client.post(path, json={"email": "a@example.test"})
-    assert (r.status_code, r.json()["code"]) == (503, "internal")
+    assert r.status_code == 202 and "If an account exists" in r.text
 
 
 def test_the_gateway_maps_gotrue_answers_to_one_outcome() -> None:
@@ -103,3 +105,98 @@ def test_the_gateway_maps_gotrue_answers_to_one_outcome() -> None:
     g._http = httpx.Client(base_url="http://auth.test", transport=Refused())
     with pytest.raises(AuthUnavailable):
         g.magic_link("a@b.co")
+
+
+# ---------------------------------------------------------------- timing: the answer never waits for GoTrue
+
+class SlowGateway:
+    """Known addresses take 300 ms (GoTrue sends the mail synchronously), unknown ones return at once."""
+
+    def __init__(self) -> None:
+        self.known = {"known@example.test"}
+        self.calls: list[tuple[str, str]] = []
+        self.done = threading.Event()
+
+    def _work(self, kind: str, email: str) -> None:
+        if email in self.known:
+            time.sleep(0.3)
+        self.calls.append((kind, email))
+        if len(self.calls) >= self.expect:
+            self.done.set()
+
+    expect = 1
+
+    def signup(self, email: str, password: str) -> bool:
+        self._work("signup", email)
+        return email not in self.known
+
+    def recover(self, email: str) -> None:
+        self._work("recover", email)
+
+    def magic_link(self, email: str) -> None:
+        self._work("magic", email)
+
+
+def timed_client(make_env: Any) -> tuple[Env, SlowGateway, MailJobs]:
+    from api.mailjobs import MailJobs
+    env: Env = make_env()
+    gw, jobs = SlowGateway(), MailJobs()
+    from fastapi.testclient import TestClient
+
+    from api.app import create_app
+    app = create_app(env.settings, verifier=None, db=None, orchestrator=env.orch, key_validator=env.keys,  # type: ignore[arg-type]
+                     session_checker=env.sessions, auth_gateway=gw, accounts=env.accounts, mail_jobs=jobs, ip_salt=b"t")
+    return Env(env.admin, TestClient(app, raise_server_exceptions=False), env.orch, env.keys, env.sessions, gw,  # type: ignore[arg-type]
+               env.accounts, env.store, env.signer, env.clock, env.settings, [], []), gw, jobs
+
+
+@pytest.mark.parametrize("path,body", [("/api/v1/auth/magic-link", {}), ("/api/v1/auth/recover", {}),
+                                       ("/api/v1/auth/signup", {"password": "a-long-password-1"})])
+def test_response_time_does_not_depend_on_whether_the_address_exists(make_env: Any, path: str, body: dict[str, str]) -> None:
+    env, gw, jobs = timed_client(make_env)
+    try:
+        gw.expect = 2 + (1 if "signup" in path else 0)               # signup of a known address recovers as well
+        durations, answers = {}, {}
+        for label, email in (("known", "known@example.test"), ("unknown", "unknown@example.test")):
+            t = time.perf_counter()
+            r = env.client.post(path, json={"email": email, **body})
+            durations[label] = time.perf_counter() - t
+            answers[label] = (r.status_code, r.text)
+        assert durations["known"] < 0.05 and durations["unknown"] < 0.05, durations
+        assert answers["known"] == answers["unknown"] and answers["known"][0] == 202
+        assert gw.done.wait(5) and jobs.drain()                       # the GoTrue calls happen afterwards
+        assert {e for _, e in gw.calls} == {"known@example.test", "unknown@example.test"}
+    finally:
+        jobs.close()
+
+
+def test_the_background_call_uses_the_lowercased_address_and_never_logs_it(make_env: Any, caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+    env, gw, jobs = timed_client(make_env)
+    caplog.set_level(logging.DEBUG)
+    try:
+        gw.expect = 1
+        env.client.post("/api/v1/auth/magic-link", json={"email": "Mixed.Case@Example.test"})
+        assert gw.done.wait(5) and jobs.drain()
+        assert gw.calls == [("magic", "mixed.case@example.test")]
+        env.gateway.down = False
+        jobs.submit("test", "Victim@Example.test", lambda: (_ for _ in ()).throw(RuntimeError("boom victim@example.test")))
+        assert jobs.drain() and jobs.failed == 1
+        text = "\n".join(r.getMessage() for r in caplog.records).lower()
+        assert "mail job failed" in text and "example.test" not in text and "victim" not in text
+        assert address_tag("Victim@Example.test") in text
+    finally:
+        jobs.close()
+
+
+def test_a_full_queue_drops_jobs_and_counts_them() -> None:
+    gate = threading.Event()
+    jobs = MailJobs(workers=1, max_pending=2)
+    try:
+        for i in range(5):
+            jobs.submit("x", f"a{i}@example.test", lambda: gate.wait(2))
+        assert jobs.dropped == 3
+        gate.set()
+        assert jobs.drain()
+    finally:
+        jobs.close()

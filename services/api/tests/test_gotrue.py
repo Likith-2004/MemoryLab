@@ -129,6 +129,7 @@ def _build_real(make_env: Any, stack: dict[str, str], tmp_path: Any, signer: Any
     from accounts.eraser import AccountEraser, GoTrueAdmin
 
     from api.accounts_client import AccountsError
+    from api.mailjobs import MailJobs
 
     class Killer:                                        # the orchestrator's kill, reduced to its database effect
         def kill(self, run_id: str, actor: str, reason: str) -> str:
@@ -153,7 +154,8 @@ def _build_real(make_env: Any, stack: dict[str, str], tmp_path: Any, signer: Any
     app = create_app(settings, verifier=verifier, db=db, orchestrator=orch, key_validator=FakeKeys(),
                      session_checker=GoTrueSessionChecker(stack["API_URL"] + "/auth/v1", stack["PUBLISHABLE_KEY"]),
                      auth_gateway=GoTrueGateway(stack["API_URL"] + "/auth/v1", stack["PUBLISHABLE_KEY"]),
-                     accounts=InProcessAccounts(), store=store, signer=signer, ip_salt=b"x")
+                     accounts=InProcessAccounts(), store=store, signer=signer, ip_salt=b"x",
+                     mail_jobs=MailJobs(inline=True))
     base.store, base.signer = store, signer
     base.client = TestClient(app, raise_server_exceptions=False)
     base.orch = orch

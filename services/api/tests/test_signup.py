@@ -30,10 +30,11 @@ def test_signup_is_rate_limited_per_ip(make_env: object) -> None:
     assert codes == [202, 202, 429]
 
 
-def test_signup_when_auth_is_down_is_an_opaque_retryable_error(env: Env) -> None:
+def test_signup_when_auth_is_down_still_answers_the_uniform_202(env: Env) -> None:
+    """GoTrue failures cannot reach the caller (that would tell them something about the address); they are counted."""
     env.gateway.down = True
     r = env.client.post("/api/v1/auth/signup", json={"email": "a@b.co", "password": "x" * 12})
-    assert r.status_code == 503 and r.headers["retry-after"] == "60"
+    assert r.status_code == 202 and r.json()["message"].startswith("If an account exists")
 
 
 def test_the_entrypoint_fails_at_start_when_unconfigured(monkeypatch: object) -> None:
