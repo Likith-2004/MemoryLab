@@ -143,6 +143,10 @@ class SignupIn(Body):
     password: SecretStr = Field(min_length=12, max_length=128)
 
 
+class EmailIn(Body):
+    email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
 SIGNUP_MESSAGE = "If an account exists, we've sent an email."
 
 
@@ -439,6 +443,25 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
         except AuthUnavailable:
             raise ApiError(503, "internal", "Try again later", {"retry-after": "60"}) from None
         return {"message": SIGNUP_MESSAGE}
+
+    def mail_endpoint(kind: str, send: Callable[[str], None]) -> Callable[[EmailIn, Request], dict[str, str]]:
+        def handler(body: EmailIn, request: Request) -> dict[str, str]:
+            """One answer whatever the address is: the limits apply to every address alike (per IP, and per address so the
+            endpoint cannot be used to flood a mailbox), so none of them says whether an account exists."""
+            email = body.email.lower()
+            ip = _ip_hash(client_ip(request), salt)
+            if not limiter.allow((f"{kind}-ip", ip), settings.signup_per_ip_per_hour, 3600) or \
+                    not limiter.allow((f"{kind}-email", hashlib.sha256(email.encode()).hexdigest()), 5, 3600):
+                raise ApiError(429, "rate_limited", "Too many attempts", {"retry-after": "3600"})
+            try:
+                send(email)
+            except AuthUnavailable:
+                raise ApiError(503, "internal", "Try again later", {"retry-after": "60"}) from None
+            return {"message": SIGNUP_MESSAGE}
+        return handler
+
+    app.post(f"{API}/auth/magic-link", status_code=202)(mail_endpoint("magic", auth_gateway.magic_link))
+    app.post(f"{API}/auth/recover", status_code=202)(mail_endpoint("recover", auth_gateway.recover))
 
     # ------------------------------------------------------------ runs
 

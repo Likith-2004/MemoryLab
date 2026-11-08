@@ -6,8 +6,8 @@ import time
 
 import click
 
-from ..api import CliError
 from ..app import build, json_option
+from ..errors import CliError
 
 
 def _password(prompt: str, from_stdin: bool, confirm: bool = False) -> str:
@@ -26,15 +26,18 @@ def _password(prompt: str, from_stdin: bool, confirm: bool = False) -> str:
 @click.option("--email", prompt=True, help="Your account email.")
 @click.option("--password-stdin", is_flag=True, help="Read the password from one line on stdin.")
 @click.option("--magic-link", is_flag=True, help="Email a one-time code instead of using a password.")
-@click.option("--code", default=None, help="The one-time code, or the sign-in link, from the email (with --magic-link; prompted for after sending the mail if omitted).")
+@click.option("--code-stdin", is_flag=True, help="Read the code or sign-in link from one line on stdin (it is a credential: never an argument).")
 @json_option
-def login(email: str, password_stdin: bool, magic_link: bool, code: str | None, as_json: bool) -> None:
+def login(email: str, password_stdin: bool, magic_link: bool, code_stdin: bool, as_json: bool) -> None:
     """Sign in and store the session (mode 0600)."""
     app = build(as_json)
     if magic_link:
-        if code is None:                                  # with --code you already have the mail: send nothing
-            app.api.send_magic_link(email)
-            app.out.note("A one-time code was sent if the address has an account.")
+        if code_stdin:                                    # you already have the mail: send nothing
+            code = sys.stdin.readline().strip()
+            if not code:
+                raise click.UsageError("no code on stdin")
+        else:
+            app.out.note(app.api.send_magic_link(email))
             code = click.prompt("code or sign-in link from the email", hide_input=True, err=True).strip()
         session = app.api.verify_code(email, code)
     else:
@@ -51,6 +54,16 @@ def logout(everywhere: bool, as_json: bool) -> None:
     app = build(as_json)
     app.api.sign_out(everywhere)
     app.out.data({"logged_out": True, "everywhere": everywhere}, lambda: app.out.line("logged out"))
+
+
+@click.command()
+@click.option("--email", prompt=True)
+@json_option
+def recover(email: str, as_json: bool) -> None:
+    """Email a password-recovery link (the answer is the same whether or not the address has an account)."""
+    app = build(as_json)
+    message = app.api.send_recovery(email)
+    app.out.data({"message": message}, lambda: app.out.line(message))
 
 
 @click.command()

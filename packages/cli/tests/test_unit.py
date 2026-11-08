@@ -13,8 +13,9 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-from memorylab_cli.api import Api, CliError
+from memorylab_cli.api import Api
 from memorylab_cli.config import Config, from_env
+from memorylab_cli.errors import CliError
 from memorylab_cli.exitcodes import EXIT_CODES, exit_code_for
 from memorylab_cli.main import cli
 from memorylab_cli.render import safe
@@ -83,9 +84,8 @@ def test_the_session_file_is_private_and_atomic(tmp_path: Path) -> None:
     store.save(Session("a", "r", time.time() + 900, "u", "e@x.test"))
     assert stat.S_IMODE(store.path.stat().st_mode) == 0o600 and stat.S_IMODE(store.path.parent.stat().st_mode) == 0o700
     loose = tmp_path / "cfg"
-    os.chmod(loose, 0o755)
-    store.save(Session("a2", "r2", time.time() + 900, "u", "e@x.test"))        # tightened again on every write
-    assert stat.S_IMODE(loose.stat().st_mode) == 0o700 and store.load().access_token == "a2"  # type: ignore[union-attr]
+    store.save(Session("a2", "r2", time.time() + 900, "u", "e@x.test"))
+    assert store.load().access_token == "a2"  # type: ignore[union-attr]
     assert [p.name for p in loose.iterdir()] == ["session.json"]                # no temp files left behind
     store.path.write_text("{broken")
     assert store.load() is None
@@ -259,3 +259,100 @@ def test_verify_accepts_a_six_digit_code_or_the_pasted_link(tmp_path: Path) -> N
     assert sent == [{"type": "email", "email": "e@x.test", "token": "123456"},
                     {"type": "magiclink", "token_hash": "abc123"}]
     assert store.load() is not None
+
+
+# ---------------------------------------------------------------- the directory is only re-moded when the CLI created it
+
+def test_a_directory_the_cli_creates_is_private_whatever_the_umask(tmp_path: Path) -> None:
+    old = os.umask(0)
+    try:
+        store = SessionStore(tmp_path / "new" / "deeper" / "session.json")
+        store.save(Session("a", "r", 1e12, "u", "e"))
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(store.path.parent.stat().st_mode) == 0o700 and stat.S_IMODE(store.path.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("mode", [0o755, 0o750, 0o700, 0o755 | 0o1000])
+def test_an_existing_directory_keeps_its_mode(tmp_path: Path, mode: int) -> None:
+    d = tmp_path / "shared"
+    d.mkdir()
+    os.chmod(d, mode)
+    SessionStore(d / "session.json").save(Session("a", "r", 1e12, "u", "e"))
+    assert stat.S_IMODE(d.stat().st_mode) == mode                                # not changed
+    assert stat.S_IMODE((d / "session.json").stat().st_mode) == 0o600            # the file is private regardless
+
+
+@pytest.mark.parametrize("mode", [0o775, 0o777, 0o757, 0o722])
+def test_a_group_or_world_writable_directory_is_refused_and_left_alone(tmp_path: Path, mode: int) -> None:
+    d = tmp_path / "open"
+    d.mkdir()
+    os.chmod(d, mode)
+    with pytest.raises(CliError) as info:
+        SessionStore(d / "session.json").save(Session("a", "r", 1e12, "u", "e"))
+    assert info.value.code == "config" and info.value.exit_code == 17
+    assert stat.S_IMODE(d.stat().st_mode) == mode and not (d / "session.json").exists()
+
+
+def test_the_cli_exits_17_for_an_unsafe_session_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    d = tmp_path / "open"
+    d.mkdir()
+    os.chmod(d, 0o777)
+    monkeypatch.setenv("MEMORYLAB_CONFIG_DIR", str(d))
+    monkeypatch.setenv("MEMORYLAB_PUBLISHABLE_KEY", "pk")
+    monkeypatch.setattr(httpx.Client, "request", lambda self, *a, **k: httpx.Response(
+        200, json={"access_token": "a", "refresh_token": "r", "expires_in": 900, "user": {"id": "u", "email": "e"}}))
+    r = CliRunner().invoke(cli, ["login", "--email", "e@x.test", "--password-stdin"], input="pw-pw-pw-pw-1\n")
+    assert r.exit_code == 17 and "writable by other users" in r.output and not (d / "session.json").exists()
+
+
+# ---------------------------------------------------------------- credentials never cross a network in clear text
+
+@pytest.mark.parametrize("url", ["http://api.example.com", "http://10.0.0.5:8000", "http://192.168.1.2", "http://[2001:db8::1]:8000",
+                                 "http://localhost.evil.com", "http://127.0.0.1.evil.com", "ftp://127.0.0.1", "ws://127.0.0.1", "api.example.com"])
+@pytest.mark.parametrize("which", ["MEMORYLAB_API_URL", "MEMORYLAB_AUTH_URL"])
+def test_a_remote_http_url_is_refused_before_any_network_call(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, which: str, url: str) -> None:
+    hits: list[str] = []
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", lambda self, req: hits.append(str(req.url)) or httpx.Response(200))
+    monkeypatch.setenv("MEMORYLAB_CONFIG_DIR", str(tmp_path / "c"))
+    monkeypatch.setenv("MEMORYLAB_PUBLISHABLE_KEY", "pk")
+    monkeypatch.delenv("MEMORYLAB_ALLOW_INSECURE", raising=False)
+    monkeypatch.setenv(which, url)
+    for args in (["login", "--email", "e@x.test", "--password-stdin"], ["signup", "--email", "e@x.test", "--password-stdin"], ["games"]):
+        r = CliRunner().invoke(cli, args, input="a-long-password-1\n")
+        assert r.exit_code == 17, (args, r.output)
+        assert "a-long-password-1" not in r.output
+    assert hits == []                                                            # nothing was sent anywhere
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8000", "http://127.9.9.9", "http://localhost:8000", "http://[::1]:8000",
+                                 "https://api.example.com", "https://10.0.0.5"])
+def test_loopback_http_and_any_https_are_accepted(url: str, tmp_path: Path) -> None:
+    c = from_env({"MEMORYLAB_API_URL": url, "MEMORYLAB_AUTH_URL": url, "MEMORYLAB_CONFIG_DIR": str(tmp_path)})
+    assert c.warnings == ()
+
+
+def test_allow_insecure_is_explicit_and_warns(tmp_path: Path) -> None:
+    c = from_env({"MEMORYLAB_API_URL": "http://dev.example.com", "MEMORYLAB_ALLOW_INSECURE": "1", "MEMORYLAB_CONFIG_DIR": str(tmp_path)})
+    assert len(c.warnings) == 1 and "unencrypted" in c.warnings[0]
+    for flag in ("0", "true", "yes", ""):
+        with pytest.raises(CliError):
+            from_env({"MEMORYLAB_API_URL": "http://dev.example.com", "MEMORYLAB_ALLOW_INSECURE": flag, "MEMORYLAB_CONFIG_DIR": str(tmp_path)})
+
+
+def test_the_warning_is_printed_on_stderr_when_insecure_is_allowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MEMORYLAB_API_URL", "http://dev.example.com")
+    monkeypatch.setenv("MEMORYLAB_ALLOW_INSECURE", "1")
+    monkeypatch.setenv("MEMORYLAB_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(httpx.Client, "request", lambda self, *a, **k: httpx.Response(200, json=[]))
+    r = CliRunner().invoke(cli, ["games", "--json"])
+    assert r.exit_code == 0 and "WARNING" in r.stderr and r.stdout.strip() == "[]"
+
+
+def test_the_code_is_never_an_argument(tmp_path: Path) -> None:
+    for args in (["login", "--email", "e@x.test", "--magic-link", "--code", "123456"],
+                 ["login", "--email", "e@x.test", "--magic-link", "--code=123456"]):
+        r = CliRunner().invoke(cli, args)
+        assert r.exit_code == 2 and "123456" not in r.output
+    cmd = cli.commands["login"]  # type: ignore[attr-defined]
+    assert not any(o == "--code" for p in cmd.params for o in p.opts) and any("--code-stdin" in p.opts for p in cmd.params)

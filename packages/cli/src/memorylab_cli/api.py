@@ -9,20 +9,8 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from .config import Config
-from .exitcodes import exit_code_for
+from .errors import CliError
 from .session import Session, SessionStore, from_token_response
-
-
-class CliError(Exception):
-    """Anything the CLI reports and exits on. `code` selects the exit code (exitcodes.EXIT_CODES)."""
-
-    def __init__(self, code: str, title: str, status: int = 0, retry_after: str | None = None) -> None:
-        super().__init__(title)
-        self.code, self.title, self.status, self.retry_after = code, title, status, retry_after
-
-    @property
-    def exit_code(self) -> int:
-        return exit_code_for(self.code)
 
 
 class Api:
@@ -81,8 +69,12 @@ class Api:
         self.store.save(s)
         return s
 
-    def send_magic_link(self, email: str) -> None:
-        self._auth("POST", "/otp", json={"email": email, "create_user": False})
+    def send_magic_link(self, email: str) -> str:
+        """Through the API, which answers the same for every address (GoTrue's /otp says whether the account exists)."""
+        return str(self.post("/auth/magic-link", {"email": email}, auth=False).get("message", ""))
+
+    def send_recovery(self, email: str) -> str:
+        return str(self.post("/auth/recover", {"email": email}, auth=False).get("message", ""))
 
     def verify_code(self, email: str, pasted: str) -> Session:
         """`pasted` is the 6-digit code from the email, or the sign-in link itself (the default template only has a link)."""

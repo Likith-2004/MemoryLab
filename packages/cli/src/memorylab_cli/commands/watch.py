@@ -10,8 +10,8 @@ from websockets.exceptions import InvalidStatus, WebSocketException
 from websockets.sync.client import connect
 from websockets.typing import Origin
 
-from ..api import CliError
 from ..app import App
+from ..errors import CliError
 from ..exitcodes import EXIT_CODES, OK
 
 FINAL = {"completed": OK, "capped": OK, "failed": EXIT_CODES["run_failed"], "killed": EXIT_CODES["run_killed"]}

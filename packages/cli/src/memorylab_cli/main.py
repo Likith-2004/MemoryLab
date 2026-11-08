@@ -5,8 +5,8 @@ from typing import Any
 
 import click
 
-from .api import CliError
 from .commands import account, admin, catalogue, experiments, runs
+from .errors import CliError
 from .exitcodes import EXIT_CODES, GENERIC
 from .render import error_out
 
@@ -36,7 +36,7 @@ def cli() -> None:
     argument: use a hidden prompt, --api-key-stdin, or MEMORYLAB_PROVIDER_KEY."""
 
 
-for _command in (account.login, account.logout, account.signup, account.me, account.delete_account, catalogue.games,
+for _command in (account.login, account.logout, account.signup, account.recover, account.me, account.delete_account, catalogue.games,
                  catalogue.presets, catalogue.models, catalogue.leaderboard, runs.runs, runs.fork,
                  experiments.experiments, admin.admin):
     cli.add_command(_command)

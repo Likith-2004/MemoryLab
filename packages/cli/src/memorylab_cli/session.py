@@ -8,6 +8,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .errors import CliError
+
 
 @dataclass
 class Session:
@@ -33,9 +35,21 @@ class SessionStore:
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
+    def _prepare_dir(self) -> None:
+        """Create the directory private (0700) if it is ours to create. An existing directory is never re-moded: if
+        others can write to it (group/world-writable) the session is not stored there at all."""
+        d = self.path.parent
+        if d.exists():
+            if d.stat().st_mode & 0o022:
+                raise CliError("config", f"{d} is writable by other users: the session is not stored there "
+                               "(choose a private directory with MEMORYLAB_CONFIG_DIR)")
+            return
+        d.parent.mkdir(parents=True, exist_ok=True)
+        d.mkdir(mode=0o700)
+        os.chmod(d, 0o700)                                              # mkdir's mode is masked by the umask
+
     def save(self, session: Session) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.path.parent, 0o700)
+        self._prepare_dir()
         fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".session-")
         try:
             os.fchmod(fd, 0o600)

@@ -134,11 +134,11 @@ def test_a_wrong_password_exits_3_and_stores_nothing(live: Live) -> None:
 
 def test_magic_link_login_with_the_emailed_link(live: Live) -> None:
     email, uid = live.user()
-    assert live.run("login", "--email", email, "--magic-link", "--code", "000000").exit_code == 3   # a wrong code is refused
+    assert live.run("login", "--email", email, "--magic-link", "--code-stdin", input="000000\n").exit_code == 3   # a wrong code
     assert not live.session_file().exists()
     seen = len(live.auth.mails_to(email))
     r = live.run("login", "--email", email, "--magic-link", input="000000\n")           # sends the mail, then prompts
-    assert r.exit_code == 3 and "one-time code was sent" in r.stderr
+    assert r.exit_code == 3 and "If an account exists" in r.stderr
     for _ in range(40):
         mails = live.auth.mails_to(email)
         if len(mails) > seen:
@@ -146,10 +146,22 @@ def test_magic_link_login_with_the_emailed_link(live: Live) -> None:
         time.sleep(0.25)
     text = live.auth.http.get(f"{live.auth.mail}/api/v1/message/{mails[0]['ID']}").json()["Text"]
     link = re.search(r"https?://\S+verify\?\S+", text).group(0)         # type: ignore[union-attr]
-    r = live.run("login", "--email", email, "--magic-link", "--code", link)
+    r = live.run("login", "--email", email, "--magic-link", "--code-stdin", input=link + "\n")
     assert r.exit_code == 0, r.output
     assert json.loads(live.run("me", "--json").output)["id"] == uid
     assert (live.session_file().stat().st_mode & 0o777) == 0o600
+    assert link.split("token=")[1].split("&")[0] not in live.session_file().read_text()
+
+
+def test_the_cli_says_the_same_for_a_known_and_an_unknown_address(live: Live) -> None:
+    known, _ = live.user()
+    unknown = live.auth.email()
+    a = live.run("login", "--email", known, "--magic-link", input="000000\n")
+    b = live.run("login", "--email", unknown, "--magic-link", input="000000\n")
+    assert (a.exit_code, a.stdout, a.stderr) == (b.exit_code, b.stdout, b.stderr)
+    ra, rb = live.run("recover", "--email", known, "--json"), live.run("recover", "--email", unknown, "--json")
+    assert ra.exit_code == rb.exit_code == 0 and ra.stdout == rb.stdout
+    assert live.env.admin.execute("select count(*) n from auth.users where email = %s", (unknown,)).fetchone()["n"] == 0  # type: ignore[index]
 
 
 def test_logout_deletes_the_session_and_everywhere_revokes_the_refresh_token(live: Live) -> None:

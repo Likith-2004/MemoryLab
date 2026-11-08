@@ -23,8 +23,11 @@ def build(as_json: bool) -> App:
     ctx = click.get_current_context(silent=True)
     if ctx is not None:
         ctx.meta["as_json"] = as_json                  # read by the error handler in main.Cli
-    cfg = from_env()
-    return App(cfg, Api(cfg, SessionStore(cfg.session_path)), Out(as_json))
+    cfg = from_env()                                   # refuses plain http to a remote host before anything is sent
+    out = Out(as_json)
+    for warning in cfg.warnings:
+        out.note(warning)
+    return App(cfg, Api(cfg, SessionStore(cfg.session_path)), out)
 
 
 F = TypeVar("F", bound=Callable[..., Any])

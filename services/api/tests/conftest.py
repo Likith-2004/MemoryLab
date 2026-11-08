@@ -195,6 +195,7 @@ class FakeGateway:
         self.existing: set[str] = set()
         self.signups: list[str] = []
         self.recovered: list[str] = []
+        self.magic: list[str] = []
         self.down = False
 
     def signup(self, email: str, password: str) -> bool:
@@ -205,7 +206,16 @@ class FakeGateway:
         return email not in self.existing
 
     def recover(self, email: str) -> None:
+        if self.down:
+            from api.auth import AuthUnavailable
+            raise AuthUnavailable
         self.recovered.append(email)
+
+    def magic_link(self, email: str) -> None:
+        if self.down:
+            from api.auth import AuthUnavailable
+            raise AuthUnavailable
+        self.magic.append(email)
 
 
 class FakeKeys:

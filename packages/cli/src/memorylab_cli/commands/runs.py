@@ -10,8 +10,8 @@ from typing import Any
 
 import click
 
-from ..api import CliError
 from ..app import App, F, build, json_option
+from ..errors import CliError
 from ..render import safe
 from ..secrets import Secret, read_secret
 from .watch import watch_run
