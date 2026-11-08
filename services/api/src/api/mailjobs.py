@@ -5,6 +5,7 @@ the address exists. The endpoints validate and charge the limits, answer 202 at 
 bounded pool. Failures cannot reach the caller; they are logged (address as a sha256 prefix only) and counted."""
 
 import hashlib
+import hmac
 import logging
 import threading
 from collections.abc import Callable
@@ -13,12 +14,16 @@ from concurrent.futures import ThreadPoolExecutor
 log = logging.getLogger("api.mail")
 
 
-def address_tag(email: str) -> str:
-    return hashlib.sha256(email.encode()).hexdigest()[:10]
+def address_tag(email: str, pepper: bytes = b"") -> str:
+    """A log-safe tag for an address: HMAC-SHA256 under a per-deployment secret, so holding the logs is not enough to test
+    candidate addresses against them. (An empty pepper is only for tests; production refuses to start without one.)"""
+    return hmac.new(pepper, email.encode(), hashlib.sha256).hexdigest()[:10]
 
 
 class MailJobs:
-    def __init__(self, workers: int = 4, max_pending: int = 200, *, inline: bool = False) -> None:
+    def __init__(self, workers: int = 4, max_pending: int = 200, *, inline: bool = False,
+                 pepper: bytes = b"") -> None:
+        self._pepper = pepper
         self.inline = inline     # tests only: run on the caller's thread so assertions need no waiting
         self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mail")
         self._max, self._pending, self._lock = max_pending, 0, threading.Lock()
@@ -29,7 +34,7 @@ class MailJobs:
         with self._lock:
             if self._pending >= self._max:
                 self.dropped += 1
-                log.error("mail job dropped (queue full) kind=%s addr=%s", kind, address_tag(email))
+                log.error("mail job dropped (queue full) kind=%s addr=%s", kind, address_tag(email, self._pepper))
                 return
             self._pending += 1
         if self.inline:
@@ -52,7 +57,7 @@ class MailJobs:
             job()
         except Exception as exc:  # noqa: BLE001 - nobody is waiting for the answer
             self.failed += 1
-            log.error("mail job failed kind=%s addr=%s error=%s", kind, address_tag(email), type(exc).__name__)
+            log.error("mail job failed kind=%s addr=%s error=%s", kind, address_tag(email, self._pepper), type(exc).__name__)
         finally:
             with self._lock:
                 self._pending -= 1

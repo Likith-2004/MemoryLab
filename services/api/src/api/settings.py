@@ -29,6 +29,7 @@ class Settings:
     ws_poll_s: float = 1.0                      # how often a socket looks for new events
     ws_heartbeat_s: float = 15.0                # heartbeat and visibility re-check period
     fork_enabled: bool = False                  # the worker cannot start from a checkpoint yet (BLOCKED.md B-6)
+    log_pepper: bytes = field(default=b"", repr=False)   # keys the address tags in logs (MEMORYLAB_LOG_PEPPER)
     trusted_proxy_hops: int = 0       # proxies in front of the API whose X-Forwarded-For entry is trusted
 
     @classmethod
@@ -47,5 +48,13 @@ class Settings:
             public_api_url=os.environ.get("MEMORYLAB_PUBLIC_API_URL", cls.public_api_url),
             allowed_origins=tuple(o for o in os.environ.get("MEMORYLAB_ALLOWED_ORIGINS", "").split(",") if o),
             fork_enabled=os.environ.get("MEMORYLAB_FORK_ENABLED") == "1",
+            log_pepper=_pepper(os.environ),
             trusted_proxy_hops=int(os.environ.get("MEMORYLAB_TRUSTED_PROXY_HOPS", "0")),
         )
+
+
+def _pepper(env: os._Environ[str]) -> bytes:
+    value = env.get("MEMORYLAB_LOG_PEPPER", "")
+    if len(value) < 16:
+        raise KeyError("MEMORYLAB_LOG_PEPPER (at least 16 characters)")
+    return value.encode()

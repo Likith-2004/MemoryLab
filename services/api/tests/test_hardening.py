@@ -333,4 +333,11 @@ def test_the_jwt_issuer_is_required_in_production_settings(monkeypatch: pytest.M
     with pytest.raises(KeyError, match="MEMORYLAB_JWT_ISSUER"):
         Settings.from_env()
     monkeypatch.setenv("MEMORYLAB_JWT_ISSUER", "https://auth.example/auth/v1")
+    monkeypatch.delenv("MEMORYLAB_LOG_PEPPER", raising=False)
+    with pytest.raises(KeyError, match="MEMORYLAB_LOG_PEPPER"):
+        Settings.from_env()
+    monkeypatch.setenv("MEMORYLAB_LOG_PEPPER", "short")
+    with pytest.raises(KeyError, match="MEMORYLAB_LOG_PEPPER"):
+        Settings.from_env()
+    monkeypatch.setenv("MEMORYLAB_LOG_PEPPER", "p" * 24)
     assert Settings.from_env().issuer == "https://auth.example/auth/v1"
