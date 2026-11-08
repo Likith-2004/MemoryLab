@@ -110,7 +110,7 @@ def test_an_erased_account_cannot_start_a_run_with_a_token_that_is_still_valid(w
         c.execute("select set_config('request.jwt.claims', %s, true)", (json.dumps({"sub": me, "role": "authenticated"}),))
         c.execute("set local role authenticated")
         with pytest.raises(psycopg.errors.RaiseException, match="account_erased"):
-            c.execute("select api_private.create_run_request('{}', %s, 'demo', 'private', 5, 100, 30, null)", ("c" * 64,))
+            c.execute("select api_private.create_run_request('{}', %s, 'demo', 'private', 5, 100, 30, 'g', null)", ("c" * 64,))
 
 
 def test_the_tombstone_cannot_be_erased(world: World) -> None:

@@ -74,6 +74,7 @@ class Submission:
     run_config: dict[str, Any]
     preset_text: str | None
     provider: dict[str, Any]        # {"name": "anthropic", "api_key": "..."} (or fake in tests)
+    parent: dict[str, Any] | None = None   # {"run_id", "checkpoint_id", "step"} for a fork
 
 
 class Orchestrator:
@@ -150,6 +151,10 @@ class Orchestrator:
         """Validate and queue. Raises SubmitError (422) or AdmissionError (429/503/409). The key is
         held in a KeyBox: memory only, never written anywhere. Idempotent per run_id: a repeat returns the
         current status and queues nothing."""
+        if sub.parent is not None:
+            # The worker cannot yet start a job from a checkpoint (Session.restore exists, the job spec and the
+            # worker do not use it). Refuse loudly: running a fork from step 0 would silently be a different run.
+            raise SubmitError("validation_failed", "starting from a checkpoint is not implemented in the worker yet")
         config, preset_text, key, script = self._validate(sub)
         box = KeyBox(key) if key is not None else KeyBox(SecretKey("placeholder-unused-key"))
         if key is None:

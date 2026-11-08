@@ -217,7 +217,7 @@ def test_a_stuck_run_owned_by_the_tombstone_is_reaped_too(world: Any) -> None:
 def test_a_deleted_stuck_run_is_reaped_and_its_owner_can_create_again(world: Any) -> None:
     import json
     run = world.run("running", 60, started_min=40, deleted=True)
-    create = "select api_private.create_run_request('{}', %s, 'demo', 'private', 5, 100, 30, null)"
+    create = "select api_private.create_run_request('{}', %s, 'demo', 'private', 5, 100, 30, 'g', null)"
 
     def as_user() -> psycopg.Connection[dict[str, Any]]:
         c = psycopg.connect(DB_URL, row_factory=dict_row)

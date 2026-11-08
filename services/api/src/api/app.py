@@ -82,6 +82,15 @@ class CreateRunIn(ValidateIn):
     api_key: SecretStr = Field(min_length=8, max_length=512)
 
 
+class ForkIn(Body):
+    checkpoint_id: str = Field(min_length=1, max_length=64)
+    config_patch: dict[str, Any]
+    caps: CapsIn | None = None
+    preset_text: str | None = Field(default=None, max_length=MAX_CUSTOM_CHARS)
+    visibility: Literal["private", "unlisted", "public"] = "private"
+    api_key: SecretStr = Field(min_length=8, max_length=512)
+
+
 class PatchRunIn(Body):
     title: str | None = Field(default=None, max_length=120)
     visibility: Literal["private", "unlisted", "public"] | None = None
@@ -145,8 +154,9 @@ def _ip_hash(ip: str, salt: bytes) -> str:
     return hashlib.sha256(salt + ip.encode()).hexdigest()[:32]
 
 
-RUN_COLS = ("id, owner_id, title, status, visibility, harness_version, model_id, provider, cap_steps, cap_tokens, "
-            "cap_wall_s, steps, tokens, started_at, ended_at, end_reason, created_at")
+RUN_COLS = ("id, owner_id, title, status, visibility, game, parent_checkpoint_id, fork_patch, harness_version, "
+            "model_id, provider, cap_steps, cap_tokens, cap_wall_s, steps, tokens, started_at, ended_at, end_reason, "
+            "created_at")
 
 
 def _resolve_config(body: ValidateIn) -> tuple[RunConfig, str | None, dict[str, Any]]:
@@ -375,12 +385,11 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
         return {"config": doc, "config_hash": config.config_hash, "mode": config.mode,
                 "benchmark_eligible": config.mode == "benchmark" and config.preset_ref in PRESETS}
 
-    @app.post(f"{API}/runs", status_code=202, dependencies=[Guard])
-    def create_run(body: CreateRunIn, request: Request, user: Authed, conn: Sess) -> dict[str, Any]:
-        ip = _ip_hash(client_ip(request), salt)
-        config, preset_text, doc = _resolve_config(body)          # invalid requests cost nothing but the read guard
-        if not conn.execute("select 1 from public.games where name = %s", (body.game,)).fetchone():
-            raise ApiError(422, "validation_failed", "unknown game")
+    def launch(conn: Conn, user: User, ip: str, *, game: str, config: RunConfig, doc: dict[str, Any],
+               preset_text: str | None, visibility: str, api_key: SecretStr,
+               parent: dict[str, Any] | None = None, fork_patch: dict[str, Any] | None = None) -> dict[str, Any]:
+        """The one create path (new run and fork): lockout, one-active-run, quota, key check, the api_private
+        function, commit, submit. Everything before the function call costs nothing but the read guard."""
         if limiter.count(("keyfail", user.id), 3600) >= settings.key_failures_per_user_per_hour:
             raise ApiError(429, "rate_limited", "Run creation is locked for an hour", {"retry-after": "3600"})
         if _has_active_run(conn, user):                           # cheap early answer; the DB function is the authority
@@ -391,12 +400,13 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
             raise ApiError(429, "rate_limited", "Too many runs", {"retry-after": "3600"})
         refund = True                                             # every exit below refunds unless the run was accepted
         try:
-            if not key_validator.validate(config.provider, body.api_key.get_secret_value()):
+            if not key_validator.validate(config.provider, api_key.get_secret_value()):
                 refund = False
                 limiter.record(("keyfail", user.id), 3600)
                 raise ApiError(422, "key_rejected", "The key was not accepted")   # one generic answer, always
             try:
-                run_id = _create_run_request(conn, body, config, doc)
+                run_id = _create_run_request(conn, game, visibility, config, doc,
+                                             str(parent["checkpoint_id"]) if parent else None, fork_patch)
             except RaiseException as exc:
                 if "active_run_exists" in str(exc):
                     raise _active_run() from None
@@ -404,15 +414,20 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
                     raise Unauthenticated from None
                 if "caps_out_of_range" in str(exc):
                     raise ApiError(422, "validation_failed", "caps out of range") from None
+                if "parent_checkpoint_invalid" in str(exc):
+                    raise NotFound from None
                 raise
             conn.commit()     # the run row must be visible to ingest before the orchestrator mints a token
             Database.apply_identity(conn, user)
             refund = False
+            payload: dict[str, Any] = {
+                "run_id": run_id, "user_id": user.id, "ip_hash": ip, "game": game,
+                "run_config": config.to_dict(), "preset_text": preset_text,
+                "provider": {"name": config.provider, "api_key": api_key.get_secret_value()}}
+            if parent is not None:
+                payload["parent"] = parent
             try:
-                orchestrator.submit({
-                    "run_id": run_id, "user_id": user.id, "ip_hash": ip, "game": body.game,
-                    "run_config": config.to_dict(), "preset_text": preset_text,
-                    "provider": {"name": config.provider, "api_key": body.api_key.get_secret_value()}})
+                orchestrator.submit(payload)
             except SubmitUnknown:
                 # the orchestrator may have accepted it: do not fail the row or refund the quota (a sandbox may be
                 # running on this key); ask for a kill and leave the row to the reaper
@@ -433,6 +448,47 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
             if refund:
                 for key in create_keys:
                     limiter.refund(key)
+
+    @app.post(f"{API}/runs", status_code=202, dependencies=[Guard])
+    def create_run(body: CreateRunIn, request: Request, user: Authed, conn: Sess) -> dict[str, Any]:
+        ip = _ip_hash(client_ip(request), salt)
+        config, preset_text, doc = _resolve_config(body)          # invalid requests cost nothing but the read guard
+        if not conn.execute("select 1 from public.games where name = %s", (body.game,)).fetchone():
+            raise ApiError(422, "validation_failed", "unknown game")
+        return launch(conn, user, ip, game=body.game, config=config, doc=doc, preset_text=preset_text,
+                      visibility=body.visibility, api_key=body.api_key)
+
+    @app.post(API + "/runs/{run_id}/fork", status_code=202, dependencies=[Guard])
+    def fork_run(user: Authed, run: Run, body: ForkIn, request: Request, conn: Sess) -> dict[str, Any]:
+        """A new run that starts from one of this run's checkpoints, with its config changed by `config_patch`.
+        The caller must be able to see the run; the checkpoint must belong to it (same 404 as a missing one); the
+        parent checkpoint is set here, never taken from the body."""
+        ip = _ip_hash(client_ip(request), salt)
+        if body.caps is None:
+            raise ApiError(422, "caps_required", "caps are required")
+        if "caps" in body.config_patch:
+            raise ApiError(422, "validation_failed", "give caps in `caps`, not in `config_patch`")
+        if not run.get("game"):
+            raise ApiError(422, "validation_failed", "this run has no recorded game to fork")
+        checkpoint = conn.execute("select id, step from api_private.run_checkpoint(%s, %s)",
+                                  (run["id"], _uuid(body.checkpoint_id))).fetchone()
+        source = conn.execute("select config_json, mode from api_private.run_config(%s)", (run["id"],)).fetchone()
+        if checkpoint is None or source is None:
+            raise NotFound
+        old: dict[str, Any] = dict(source["config_json"])
+        changed = {k: v for k, v in body.config_patch.items() if old.get(k) != v}
+        new_caps = {"max_steps": body.caps.max_steps, "max_tokens": body.caps.max_tokens,
+                    "max_wall_s": body.caps.max_wall_s}
+        if any(old.get("caps", {}).get(k) != v for k, v in new_caps.items()):
+            changed["caps"] = new_caps
+        merged = {k: v for k, v in {**old, **body.config_patch}.items() if k != "caps"}
+        config, preset_text, doc = _resolve_config(
+            ValidateIn(config=merged, caps=body.caps, preset_text=body.preset_text))
+        if (source["mode"] == "benchmark" or config.mode == "benchmark") and len(changed) > 1:
+            raise ApiError(422, "benchmark_patch_invalid", "a benchmark fork may change one field only")
+        return launch(conn, user, ip, game=run["game"], config=config, doc=doc, preset_text=preset_text,
+                      visibility=body.visibility, api_key=body.api_key, fork_patch=changed,
+                      parent={"run_id": run["id"], "checkpoint_id": str(checkpoint["id"]), "step": checkpoint["step"]})
 
     @app.get(f"{API}/runs", dependencies=[Guard])
     def list_runs(user: Authed, conn: Sess, limit: Annotated[int, Query(ge=1, le=100)] = 25,
@@ -625,14 +681,17 @@ def _has_active_run(conn: Conn, user: User) -> bool:
                         (user.id, list(_ACTIVE))).fetchone() is not None
 
 
-def _create_run_request(conn: Conn, body: CreateRunIn, config: RunConfig, doc: dict[str, Any]) -> str:
+def _create_run_request(conn: Conn, game: str, visibility: str, config: RunConfig, doc: dict[str, Any],
+                        parent_checkpoint_id: str | None, fork_patch: dict[str, Any] | None) -> str:
     """The only write path for a new run: the owner is auth.uid() inside the function, never a parameter."""
     from psycopg.types.json import Jsonb
     caps = config.caps
     row = conn.execute(
-        "select api_private.create_run_request(%s, %s, %s, %s, %s, %s, %s, null) as id",
-        (Jsonb(doc), config.config_hash, config.mode, body.visibility, caps.max_steps, caps.max_tokens,
-         int(caps.max_wall_s))).fetchone()
+        "select api_private.create_run_request(p_config_json => %s, p_config_hash => %s, p_mode => %s, "
+        "p_visibility => %s, p_cap_steps => %s, p_cap_tokens => %s, p_cap_wall_s => %s, p_game => %s, "
+        "p_parent_checkpoint_id => %s, p_fork_patch => %s) as id",
+        (Jsonb(doc), config.config_hash, config.mode, visibility, caps.max_steps, caps.max_tokens,
+         int(caps.max_wall_s), game, parent_checkpoint_id, None if fork_patch is None else Jsonb(fork_patch))).fetchone()
     return str(row["id"])  # type: ignore[index]
 
 

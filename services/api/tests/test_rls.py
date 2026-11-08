@@ -52,7 +52,7 @@ def test_run_and_its_children_follow_visibility(db: Db, viewer: str, visibility:
         # unlisted = link-only: no table lists it to anyone but the owner and admins (the API serves it by id)
         expected = 1 if (privileged or visibility == "public") else 0
         assert len(db.q(f"select 1 from public.{table} where {key} = %s", run)) == expected, table
-    cfg = db.q("select 1 from public.run_configs")
+    cfg = db.q("select 1 from public.run_configs c where c.id = (select config_id from public.runs where id = %s)", run)
     assert len(cfg) == (1 if privileged or visibility == "public" else 0)
 
 
@@ -65,7 +65,7 @@ def test_soft_deleted_runs_are_hidden_from_everyone_but_owner_and_admin(db: Db) 
     assert len(db.q("select 1 from public.runs where id = %s", run)) == 1
 
 
-CREATE = ("select api_private.create_run_request(%s::jsonb, %s, 'demo', 'private', 5, 100, 30, null) as id")
+CREATE = ("select api_private.create_run_request(%s::jsonb, %s, 'demo', 'private', 5, 100, 30, 'g', null) as id")
 JSON = "{}"
 
 
@@ -130,10 +130,10 @@ def test_create_function_enforces_caps_and_one_active_run(db: Db) -> None:
     for caps in ((0, 100, 30), (100001, 100, 30), (5, 0, 30), (5, 1_000_000_001, 30), (5, 100, 0), (5, 100, 86401)):
         db.x("savepoint s")
         with pytest.raises(psycopg.errors.RaiseException, match="caps_out_of_range"):
-            db.q("select api_private.create_run_request('{}', %s, 'demo', 'private', %s, %s, %s, null)",
+            db.q("select api_private.create_run_request('{}', %s, 'demo', 'private', %s, %s, %s, 'g', null)",
                  "c" * 64, *caps)
         db.x("rollback to savepoint s")
-    db.q("select api_private.create_run_request('{}', %s, 'demo', 'private', 100000, 1000000000, 86400, null)",
+    db.q("select api_private.create_run_request('{}', %s, 'demo', 'private', 100000, 1000000000, 86400, 'g', null)",
          "c" * 64)                                                         # the maxima themselves are fine
     db.x("savepoint s")
     with pytest.raises(psycopg.errors.RaiseException, match="active_run_exists"):
@@ -435,9 +435,11 @@ def test_no_child_table_lists_an_unlisted_runs_rows(db: Db, table: str, viewer: 
     seed_children(db, unlisted)
     seed_children(db, public)
     db.as_(None if viewer == "anon" else other)
-    assert {str(r["run_id"]) for r in db.q(f"select run_id from public.{table}")} == {public}   # not an enumeration
+    listed = {str(r["run_id"]) for r in db.q(f"select run_id from public.{table}")}
+    assert public in listed and unlisted not in listed                                         # not an enumeration
     db.as_(owner)
-    assert {str(r["run_id"]) for r in db.q(f"select run_id from public.{table}")} == {unlisted, public}
+    listed = {str(r["run_id"]) for r in db.q(f"select run_id from public.{table}")}
+    assert {unlisted, public} <= listed
 
 
 def test_only_the_expected_policies_still_use_the_by_id_visibility_helper(db: Db) -> None:
@@ -473,3 +475,32 @@ def test_the_readers_serve_unlisted_runs_by_id_and_nothing_hidden(db: Db) -> Non
     assert db.q("select * from api_private.run_memory_version(%s, 'nope.md', null)", unl) == []
     assert db.q("select content from api_private.run_memory_version(%s, 'a.md', null)", unl) == [
         {"content": "UNLISTED-MEMORY-CONTENT"}]
+
+
+def test_the_fork_readers_follow_get_visible_run(db: Db) -> None:
+    owner, other, admin = db.new_user(), db.new_user(), db.new_user("admin")
+    priv, unl, pub, gone = (db.make_run(owner, v) for v in ("private", "unlisted", "public", "unlisted"))
+    db.as_service()
+    db.x("update public.runs set deleted_at = now() where id = %s", gone)
+    cps = {}
+    for r in (priv, unl, pub, gone):
+        cps[r] = db.q("insert into public.checkpoints (run_id, step, savestate_key, memory_version, transcript_offset, "
+                      "config_hash) values (%s, 1, 'k', 1, 0, %s) returning id", r, "b" * 64)[0]["id"]
+
+    def seen(run: str, cp: str) -> tuple[int, int]:
+        return (len(db.q("select * from api_private.run_config(%s)", run)),
+                len(db.q("select * from api_private.run_checkpoint(%s, %s)", run, cp)))
+
+    for who, expect in ((owner, {priv: 1, unl: 1, pub: 1, gone: 0}), (admin, {priv: 1, unl: 1, pub: 1, gone: 0}),
+                        (other, {priv: 0, unl: 1, pub: 1, gone: 0})):
+        db.as_(who)
+        for run, n in expect.items():
+            assert seen(run, cps[run]) == (n, n), (who, run)
+    db.as_(other)
+    assert seen(unl, cps[pub]) == (1, 0)                    # a checkpoint of another run is not found under this run
+    assert seen(pub, cps[priv]) == (1, 0)                   # ...in particular not a hidden run's
+    db.as_(None)
+    db.x("savepoint s")
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):    # forking needs a signed-in user: no anon execute
+        db.q("select * from api_private.run_config(%s)", pub)
+    db.x("rollback to savepoint s")

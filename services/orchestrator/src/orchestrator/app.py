@@ -33,6 +33,13 @@ class ProviderIn(BaseModel):
     script: list[dict[str, Any]] | None = None
 
 
+class ParentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    run_id: str = Field(max_length=40)
+    checkpoint_id: str = Field(max_length=40)
+    step: int = Field(ge=0)
+
+
 class RunIn(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     run_id: str = Field(max_length=40)
@@ -42,6 +49,7 @@ class RunIn(BaseModel):
     run_config: dict[str, Any]
     preset_text: str | None = Field(default=None, max_length=4000)
     provider: ProviderIn
+    parent: ParentIn | None = None          # set for a fork: start from this checkpoint
 
 
 class KillIn(BaseModel):
@@ -108,8 +116,9 @@ def create_app(orch: Orchestrator, api_token: bytes) -> FastAPI:
             provider["api_key"] = body.provider.api_key.get_secret_value()
         if body.provider.script is not None:
             provider["script"] = body.provider.script
+        parent = body.parent.model_dump() if body.parent is not None else None
         return orch.submit(Submission(body.run_id, body.user_id, body.ip_hash, body.game, body.run_config,
-                                      body.preset_text, provider))
+                                      body.preset_text, provider, parent))
 
     @app.post("/internal/runs/{run_id}/stop")
     async def stop(run_id: str, body: StopIn, request: Request) -> dict[str, str]:

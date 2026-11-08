@@ -55,7 +55,7 @@ def test_two_threads_racing_into_the_create_function_make_one_run(env: Env) -> N
         with db.session(User(uid)) as conn:
             barrier.wait(timeout=10)
             try:
-                conn.execute("select api_private.create_run_request('{}', %s, 'demo', 'private', 5, 100, 30, null)",
+                conn.execute("select api_private.create_run_request('{}', %s, 'demo', 'private', 5, 100, 30, 'g', null)",
                              ("c" * 64,))
             except psycopg.errors.RaiseException as exc:
                 return str(exc.diag.message_primary)
