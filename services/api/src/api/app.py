@@ -29,7 +29,7 @@ from runlog.store import ObjectStore
 from .auth import AuthGateway, AuthUnavailable, JwtVerifier, SessionChecker, Unauthenticated, User
 from .db import Conn, Database
 from .limits import RateLimiter
-from .orchestrator_client import KeyValidator, OrchestratorClient, UpstreamError
+from .orchestrator_client import KeyValidator, OrchestratorClient, SubmitUnknown, UpstreamError
 from .settings import Settings
 
 log = logging.getLogger("api")
@@ -388,6 +388,14 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
                     "run_id": run_id, "user_id": user.id, "ip_hash": ip, "game": body.game,
                     "run_config": config.to_dict(), "preset_text": preset_text,
                     "provider": {"name": config.provider, "api_key": body.api_key.get_secret_value()}})
+            except SubmitUnknown:
+                # the orchestrator may have accepted it: do not fail the row or refund the quota (a sandbox may be
+                # running on this key); ask for a kill and leave the row to the reaper
+                try:
+                    orchestrator.kill(run_id, "system", "submit_unknown")
+                except Exception:  # noqa: BLE001 - best effort; the reaper is the backstop
+                    log.warning("could not kill an ambiguous submit run=%s", run_id)
+                raise ApiError(503, "internal", "Try again later", {"retry-after": "30"}) from None
             except Exception as exc:
                 # a refused submit must not leave a queued row that blocks the user until the reaper runs
                 conn.execute("select api_private.abandon_run_request(%s)", (run_id,))

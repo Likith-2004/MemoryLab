@@ -13,6 +13,11 @@ class UpstreamError(Exception):
         self.status, self.code, self.retry_after_s = status, code, retry_after_s
 
 
+class SubmitUnknown(Exception):
+    """The submit may or may not have been accepted: the request was (or may have been) sent and no answer came
+    back. The caller must neither abandon the run nor refund the quota; the orchestrator is asked to kill it."""
+
+
 class OrchestratorClient(Protocol):
     def submit(self, payload: dict[str, Any]) -> dict[str, Any]: ...
     def stop(self, run_id: str, actor: str) -> str: ...
@@ -25,6 +30,7 @@ class KeyValidator(Protocol):
     def validate(self, provider: str, api_key: str) -> bool: ...
 
 
+_NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.UnsupportedProtocol)
 _PASS_THROUGH = {"caps_exceed_limit", "capacity_full", "rate_limited", "breaker_open", "validation_failed"}
 
 
@@ -35,10 +41,15 @@ class HttpOrchestrator:
         self._http = httpx.Client(base_url=base_url, timeout=timeout_s, follow_redirects=False,
                                   headers={"authorization": "Bearer " + token.decode()})
 
-    def _call(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _call(self, method: str, path: str, body: dict[str, Any] | None = None, *,
+              sent_means_unknown: bool = False) -> dict[str, Any]:
         try:
             resp = self._http.request(method, path, json=body)
+        except _NOT_SENT:
+            raise UpstreamError(503, "capacity_full", 30) from None          # nothing reached the orchestrator
         except httpx.HTTPError:
+            if sent_means_unknown:
+                raise SubmitUnknown from None                                # it may have been accepted
             raise UpstreamError(503, "capacity_full", 30) from None
         if resp.status_code >= 400:
             try:
@@ -53,7 +64,7 @@ class HttpOrchestrator:
         return data if isinstance(data, dict) else {}
 
     def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._call("POST", "/internal/runs", payload)
+        return self._call("POST", "/internal/runs", payload, sent_means_unknown=True)
 
     def stop(self, run_id: str, actor: str) -> str:
         return str(self._call("POST", f"/internal/runs/{run_id}/stop", {"actor": actor}).get("result", ""))

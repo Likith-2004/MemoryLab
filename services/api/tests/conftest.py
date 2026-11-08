@@ -22,7 +22,6 @@ from psycopg.rows import dict_row
 from api.app import create_app
 from api.auth import JwtVerifier
 from api.db import Database
-from api.orchestrator_client import UpstreamError
 from api.settings import Settings
 
 DB_URL = os.environ.get("MEMORYLAB_DB_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres")   # admin: seeding
@@ -137,11 +136,14 @@ class FakeOrchestrator:
     stopped: list[tuple[str, str]] = field(default_factory=list)
     killed: list[tuple[str, str, str]] = field(default_factory=list)
     breaker_calls: list[tuple[bool, str, str]] = field(default_factory=list)
-    fail_with: UpstreamError | None = None
+    fail_with: Exception | None = None
+    delegate: Any = None                 # a real HttpOrchestrator pointed at a test server, for transport-level cases
 
     def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.fail_with:
             raise self.fail_with
+        if self.delegate is not None:
+            return self.delegate.submit(payload)  # type: ignore[no-any-return]
         self.submitted.append(payload)
         return {"run_id": payload["run_id"], "status": "queued"}
 
@@ -151,6 +153,8 @@ class FakeOrchestrator:
 
     def kill(self, run_id: str, actor: str, reason: str) -> str:
         self.killed.append((run_id, actor, reason))
+        if self.delegate is not None:
+            return self.delegate.kill(run_id, actor, reason)  # type: ignore[no-any-return]
         return "killed"
 
     def snapshot(self) -> dict[str, Any]:

@@ -68,7 +68,7 @@ class Scheduler:
         self.cfg, self.clock = cfg, clock
         self._queue: deque[RunRequest] = deque()
         self._active: dict[str, RunRequest] = {}
-        self._known: set[str] = set()
+        self._known: dict[str, str] = {}              # run_id -> user_id, for idempotent repeats
         self._lock = threading.RLock()
         self.breaker = Breaker()
 
@@ -96,7 +96,7 @@ class Scheduler:
             if len(self._queue) >= self.cfg.max_queue:
                 raise CapacityFull(retry_after_s=60)
             self._queue.append(req)
-            self._known.add(req.run_id)
+            self._known[req.run_id] = req.user_id
             return len(self._queue) - 1
 
     def expire(self) -> list[RunRequest]:
@@ -129,6 +129,19 @@ class Scheduler:
                     r.key_box.discard()
                     return r
             return None
+
+    def user_of(self, run_id: str) -> str | None:
+        with self._lock:
+            return self._known.get(run_id)
+
+    def status_of(self, run_id: str) -> str:
+        """queued | active | finished | unknown, for answering a repeated submit."""
+        with self._lock:
+            if any(r.run_id == run_id for r in self._queue):
+                return "queued"
+            if run_id in self._active:
+                return "active"
+            return "finished" if run_id in self._known else "unknown"
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
