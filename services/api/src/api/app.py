@@ -152,7 +152,7 @@ class ReportIn(Body):
 
 class BreakerIn(Body):
     open: bool
-    reason: str = Field(default="", max_length=200)
+    reason: str = Field(min_length=1, max_length=200)          # a reason for closing the breaker too: every action is audited
 
 
 class DeleteAccountIn(Body):
@@ -161,6 +161,15 @@ class DeleteAccountIn(Body):
 
 class AdminKillIn(Body):
     reason: str = Field(min_length=1, max_length=200)
+
+
+class ReportResolveIn(Body):
+    status: Literal["actioned", "dismissed"]
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class UnverifyIn(Body):
+    reason: str = Field(min_length=1, max_length=500)
 
 
 _REFUNDED_REFUSALS = ("capacity_full", "breaker_open")
@@ -872,17 +881,89 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
 
     # ------------------------------------------------------------ admin
 
+    def audit(conn: Conn, admin: User, request: Request, action: str, target: str, reason: str) -> None:
+        """Record an admin action before it is taken, and commit it: an attempt that then fails is still on record, and
+        an action whose audit row cannot be written does not happen."""
+        try:
+            conn.execute("select api_private.admin_audit(%s, %s, %s, %s)",
+                         (action, target, reason, _ip_hash(client_ip(request), salt)))
+        except RaiseException as exc:
+            if "reason_required" in str(exc):
+                raise ApiError(422, "validation_failed", "a reason is required") from None
+            raise
+        conn.commit()
+        Database.apply_identity(conn, admin)
+
     @app.get(f"{API}/admin/runs")
     def admin_runs(_: Admin) -> dict[str, Any]:
         return orchestrator.snapshot()
 
-    @app.post(API + "/admin/runs/{run_id}/kill")
-    def admin_kill(run_id: str, body: AdminKillIn, admin: Admin) -> dict[str, Any]:
-        return {"result": orchestrator.kill(_uuid(run_id), admin.id, body.reason)}
+    @app.post(API + "/admin/runs/{run_id}/kill", dependencies=[WriteGuard])
+    def admin_kill(run_id: str, body: AdminKillIn, admin: Admin, request: Request, conn: Sess) -> dict[str, Any]:
+        target = _uuid(run_id)
+        audit(conn, admin, request, "run.kill", target, body.reason)
+        return {"result": orchestrator.kill(target, admin.id, body.reason)}
 
-    @app.post(f"{API}/admin/breaker")
-    def admin_breaker(body: BreakerIn, admin: Admin) -> dict[str, Any]:
+    @app.post(f"{API}/admin/breaker", dependencies=[WriteGuard])
+    def admin_breaker(body: BreakerIn, admin: Admin, request: Request, conn: Sess) -> dict[str, Any]:
+        audit(conn, admin, request, "breaker.open" if body.open else "breaker.close", "global", body.reason)
         return orchestrator.breaker(body.open, admin.id, body.reason)
+
+    @app.get(f"{API}/admin/reports")
+    def admin_reports(_: Admin, conn: Sess, status: Annotated[Literal["open", "actioned", "dismissed", "all"], Query()] = "open",
+                      limit: Annotated[int, Query(ge=1, le=100)] = 50, before: str | None = None) -> dict[str, Any]:
+        cursor = None if before is None else _cursor(before)
+        rows = conn.execute(
+            "select r.id, r.run_id, r.reporter_id, r.reason, r.status, r.created_at, r.resolved_at, r.resolved_by, "
+            "r.resolution_reason, u.title as run_title, u.owner_id as run_owner_id, u.visibility as run_visibility, "
+            "u.status as run_status, u.deleted_at is not null as run_deleted "
+            "from public.reports r join public.runs u on u.id = r.run_id "
+            "where (%s = 'all' or r.status = %s) "
+            "and (%s::timestamptz is null or (r.created_at, r.id) < (%s::timestamptz, %s::uuid)) "
+            "order by r.created_at desc, r.id desc limit %s",
+            (status, status, cursor and cursor[0], cursor and cursor[0], cursor and cursor[1], limit + 1)).fetchall()
+        more = len(rows) > limit
+        rows = rows[:limit]
+        nxt = f"{rows[-1]['created_at'].isoformat()}|{rows[-1]['id']}" if more else None
+        return {"reports": [_jsonable(r) for r in rows], "next": nxt}
+
+    @app.patch(API + "/admin/reports/{report_id}", dependencies=[WriteGuard])
+    def admin_resolve_report(report_id: str, body: ReportResolveIn, _: Admin, request: Request,
+                             conn: Sess) -> dict[str, str]:
+        """open -> actioned | dismissed, once, with a reason; the audit row is written in the same transaction."""
+        rid = _uuid(report_id)
+        try:
+            conn.execute("select api_private.admin_resolve_report(%s, %s, %s, %s)",
+                         (rid, body.status, body.reason, _ip_hash(client_ip(request), salt)))
+        except RaiseException as exc:
+            text = str(exc)
+            if "reason_required" in text:
+                raise ApiError(422, "validation_failed", "a reason is required") from None
+            if "report_not_found" in text:
+                raise NotFound from None
+            if "report_closed" in text:
+                raise ApiError(409, "report_closed", "The report has already been resolved") from None
+            if "not_admin" in text:
+                raise NotFound from None
+            raise
+        return {"id": rid, "status": body.status}
+
+    @app.post(API + "/admin/leaderboard/{run_id}/unverify", dependencies=[WriteGuard])
+    def admin_unverify(run_id: str, body: UnverifyIn, _: Admin, request: Request, conn: Sess) -> dict[str, str]:
+        rid = _uuid(run_id)
+        try:
+            conn.execute("select api_private.admin_unverify(%s, %s, %s)",
+                         (rid, body.reason, _ip_hash(client_ip(request), salt)))
+        except RaiseException as exc:
+            text = str(exc)
+            if "reason_required" in text:
+                raise ApiError(422, "validation_failed", "a reason is required") from None
+            if "run_not_found" in text or "not_admin" in text:
+                raise NotFound from None
+            if "not_verified" in text:
+                raise ApiError(409, "not_verified", "The run is not on the leaderboard") from None
+            raise
+        return {"run_id": rid, "status": "unverified"}
 
     sockets = SocketCounter()
 

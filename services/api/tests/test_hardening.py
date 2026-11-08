@@ -156,7 +156,9 @@ def test_a_duplicate_open_report_adds_no_row(env: Env) -> None:
         assert env.client.post(f"/api/v1/runs/{run}/report", json={"reason": reason},
                                headers=bearer(reporter)).status_code == 202
     assert env.admin.execute("select count(*) n from public.reports where run_id = %s", (run,)).fetchone()["n"] == 1  # type: ignore[index]
-    env.admin.execute("update public.reports set status = 'dismissed' where run_id = %s", (run,))
+    admin = env.user("admin")
+    env.admin.execute("update public.reports set status = 'dismissed', resolved_at = now(), resolved_by = %s, "
+                      "resolution_reason = 'ok' where run_id = %s", (admin, run))
     env.client.post(f"/api/v1/runs/{run}/report", json={"reason": "new"}, headers=bearer(reporter))
     assert env.admin.execute("select count(*) n from public.reports where run_id = %s", (run,)).fetchone()["n"] == 2  # type: ignore[index]
 

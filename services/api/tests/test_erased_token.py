@@ -28,6 +28,10 @@ WRITES: list[tuple[str, str, Any]] = [
     ("POST", "/api/v1/runs/{run}/stream-ticket", None),
     ("POST", "/api/v1/experiments", "EXPERIMENT"),
     ("PATCH", "/api/v1/experiments/{run}", {"title": "t"}),            # {run} is just a uuid here: the 401 comes first
+    ("PATCH", "/api/v1/admin/reports/{run}", {"status": "actioned", "reason": "x"}),
+    ("POST", "/api/v1/admin/leaderboard/{run}/unverify", {"reason": "x"}),
+    ("POST", "/api/v1/admin/runs/{run}/kill", {"reason": "x"}),
+    ("POST", "/api/v1/admin/breaker", {"open": True, "reason": "x"}),
     ("DELETE", "/api/v1/me", {"confirm": "DELETE"}),
 ]
 

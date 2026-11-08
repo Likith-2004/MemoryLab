@@ -137,6 +137,7 @@ class FakeOrchestrator:
     killed: list[tuple[str, str, str]] = field(default_factory=list)
     breaker_calls: list[tuple[bool, str, str]] = field(default_factory=list)
     fail_with: Exception | None = None
+    kill_fail: Exception | None = None
     delegate: Any = None                 # a real HttpOrchestrator pointed at a test server, for transport-level cases
 
     def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -152,6 +153,8 @@ class FakeOrchestrator:
         return "stopping"
 
     def kill(self, run_id: str, actor: str, reason: str) -> str:
+        if self.kill_fail:
+            raise self.kill_fail
         self.killed.append((run_id, actor, reason))
         if self.delegate is not None:
             return self.delegate.kill(run_id, actor, reason)  # type: ignore[no-any-return]
