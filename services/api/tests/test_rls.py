@@ -49,8 +49,8 @@ def test_run_and_its_children_follow_visibility(db: Db, viewer: str, visibility:
     privileged = viewer in ("owner", "admin")
     for table in ("runs", "run_events_index", "memory_files", "checkpoints", "run_scores"):
         key = "id" if table == "runs" else "run_id"
-        # the runs table lists public runs only to others (unlisted = link-only); child tables follow run_visible
-        expected = 1 if (privileged or (sees and (table != "runs" or visibility == "public"))) else 0
+        # unlisted = link-only: no table lists it to anyone but the owner and admins (the API serves it by id)
+        expected = 1 if (privileged or visibility == "public") else 0
         assert len(db.q(f"select 1 from public.{table} where {key} = %s", run)) == expected, table
     cfg = db.q("select 1 from public.run_configs")
     assert len(cfg) == (1 if privileged or visibility == "public" else 0)
@@ -288,7 +288,7 @@ def test_audit_log_is_admin_read_only(db: Db) -> None:
     db.as_(a)
     assert db.q("select * from public.audit_log") == []
     db.as_(admin)
-    assert len(db.q("select * from public.audit_log")) == 1
+    assert len(db.q("select * from public.audit_log where actor_id = %s", admin)) == 1
 
 
 def test_reports_reporter_reads_own_admin_all_and_only_visible_runs_can_be_reported(db: Db) -> None:
@@ -413,3 +413,63 @@ def test_unlisted_run_configs_are_not_listable_through_the_data_api(db: Db) -> N
     assert db.q("select 1 from public.run_configs") == []
     db.as_(owner)
     assert len(db.q("select 1 from public.run_configs")) == 1 and unl
+
+
+CHILDREN = ["run_events_index", "memory_files", "checkpoints", "run_scores"]
+
+
+def seed_children(db: Db, run: str) -> None:
+    db.as_service()
+    db.x("insert into public.run_events_index values (%s, 1, 'run.start', 0, now(), 0)", run)
+    db.x("insert into public.memory_files values (%s, 'a.md', 1, 0, 'UNLISTED-MEMORY-CONTENT', 23, false)", run)
+    db.x("insert into public.checkpoints (run_id, step, savestate_key, memory_version, transcript_offset, config_hash) "
+         "values (%s, 0, 'k', 1, 0, %s)", run, "b" * 64)
+    db.x("insert into public.run_scores values (%s, 1, 1, 1, 1, 1, 0, 0, false)", run)
+
+
+@pytest.mark.parametrize("table", CHILDREN)
+@pytest.mark.parametrize("viewer", ["anon", "other"])
+def test_no_child_table_lists_an_unlisted_runs_rows(db: Db, table: str, viewer: str) -> None:
+    owner, other = db.new_user(), db.new_user()
+    unlisted, public = db.make_run(owner, "unlisted"), db.make_run(owner, "public")
+    seed_children(db, unlisted)
+    seed_children(db, public)
+    db.as_(None if viewer == "anon" else other)
+    assert {str(r["run_id"]) for r in db.q(f"select run_id from public.{table}")} == {public}   # not an enumeration
+    db.as_(owner)
+    assert {str(r["run_id"]) for r in db.q(f"select run_id from public.{table}")} == {unlisted, public}
+
+
+def test_only_the_expected_policies_still_use_the_by_id_visibility_helper(db: Db) -> None:
+    """run_visible() admits unlisted runs, which is right for a lookup by id and wrong for a row policy that lists.
+    The allowed set is empty: nothing row-level may use it. Putting it back on any child table fails here."""
+    using = db.q("select tablename from pg_policies where schemaname = 'public' and qual like %s", "%run_visible%")
+    assert {r["tablename"] for r in using} == set()
+    listable = db.q("select tablename from pg_policies where schemaname = 'public' and qual like %s", "%run_listable%")
+    assert {r["tablename"] for r in listable} == set(CHILDREN)
+
+
+def test_the_readers_serve_unlisted_runs_by_id_and_nothing_hidden(db: Db) -> None:
+    owner, other, admin = db.new_user(), db.new_user(), db.new_user("admin")
+    priv, unl, pub, gone = (db.make_run(owner, v) for v in ("private", "unlisted", "public", "unlisted"))
+    db.as_service()
+    db.x("update public.runs set deleted_at = now() where id = %s", gone)
+    for r in (priv, unl, pub, gone):
+        seed_children(db, r)
+
+    def seen(run: str) -> tuple[int, int, int, int, int]:
+        return (len(db.q("select * from api_private.run_memory_tree(%s, 100)", run)),
+                len(db.q("select * from api_private.run_memory_version(%s, 'a.md', null)", run)),
+                len(db.q("select * from api_private.run_memory_version(%s, 'a.md', 1)", run)),
+                len(db.q("select * from api_private.run_checkpoints(%s)", run)),
+                len(db.q("select * from api_private.run_score(%s)", run)))
+
+    for who, expect in ((None, {priv: 0, unl: 1, pub: 1, gone: 0}), (other, {priv: 0, unl: 1, pub: 1, gone: 0}),
+                        (owner, {priv: 1, unl: 1, pub: 1, gone: 0}), (admin, {priv: 1, unl: 1, pub: 1, gone: 0})):
+        db.as_(who)
+        for run, n in expect.items():
+            assert seen(run) == (n,) * 5, (who, run)
+    db.as_(other)
+    assert db.q("select * from api_private.run_memory_version(%s, 'nope.md', null)", unl) == []
+    assert db.q("select content from api_private.run_memory_version(%s, 'a.md', null)", unl) == [
+        {"content": "UNLISTED-MEMORY-CONTENT"}]

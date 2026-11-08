@@ -457,22 +457,21 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
 
     @app.get(API + "/runs/{run_id}/score", dependencies=[Guard])
     def score(run: Run, conn: Sess) -> dict[str, Any]:
-        row = conn.execute("select * from public.run_scores where run_id = %s", (run["id"],)).fetchone()
+        row = conn.execute("select * from api_private.run_score(%s)", (run["id"],)).fetchone()
         if row is None:
             raise NotFound
         return _jsonable(row)
 
     @app.get(API + "/runs/{run_id}/checkpoints", dependencies=[Guard])
     def checkpoints(run: Run, conn: Sess) -> list[dict[str, Any]]:
-        rows = conn.execute("select id, step, memory_version, config_hash from public.checkpoints "
-                            "where run_id = %s order by step", (run["id"],)).fetchall()
+        rows = conn.execute("select id, step, memory_version, config_hash from api_private.run_checkpoints(%s)",
+                            (run["id"],)).fetchall()
         return [_jsonable(r) for r in rows]
 
     @app.get(API + "/runs/{run_id}/memory", dependencies=[Guard])
     def memory_tree(run: Run, conn: Sess, at_step: Annotated[int, Query(ge=0)] = 1_000_000) -> list[dict[str, Any]]:
-        rows = conn.execute(
-            "select distinct on (path) path, chars, version, deleted from public.memory_files "
-            "where run_id = %s and step <= %s order by path, version desc", (run["id"], at_step)).fetchall()
+        rows = conn.execute("select path, chars, version, deleted from api_private.run_memory_tree(%s, %s)",
+                            (run["id"], at_step)).fetchall()
         return [{"path": r["path"], "chars": r["chars"], "version": r["version"]} for r in rows if not r["deleted"]]
 
     @app.get(API + "/runs/{run_id}/memory/file", dependencies=[Guard])
@@ -580,11 +579,8 @@ def _public_run(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _memory_version(conn: Conn, run_id: str, path: str, version: int | None) -> dict[str, Any] | None:
-    if version is None:
-        return conn.execute("select content, deleted from public.memory_files where run_id = %s and path = %s "
-                            "order by version desc limit 1", (run_id, path)).fetchone()
-    return conn.execute("select content, deleted from public.memory_files where run_id = %s and path = %s "
-                        "and version = %s", (run_id, path, version)).fetchone()
+    return conn.execute("select content, deleted from api_private.run_memory_version(%s, %s, %s)",
+                        (run_id, path, version)).fetchone()
 
 
 def _active_run() -> ApiError:
