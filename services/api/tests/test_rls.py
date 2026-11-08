@@ -1,7 +1,10 @@
 """RLS matrix against the local Supabase database: anon, user A, user B, admin, service role."""
 
+import json
+
 import psycopg
 import pytest
+
 from conftest import Db
 
 TABLES = ["profiles", "games", "start_states", "presets", "run_configs", "runs", "run_events_index",
@@ -199,7 +202,7 @@ def test_admin_role_comes_from_the_table_not_the_jwt_claims(db: Db) -> None:
     run = db.make_run(owner)
     db.as_(a)
     db.x("select set_config('request.jwt.claims', %s, true)",
-         '{"sub": "%s", "role": "authenticated", "app_metadata": {"role": "admin"}, "user_role": "admin"}' % a)
+         json.dumps({"sub": a, "role": "authenticated", "app_metadata": {"role": "admin"}, "user_role": "admin"}))
     assert db.q("select 1 from public.runs where id = %s", run) == []
     assert db.q("select public.is_admin() v") == [{"v": False}]
 
@@ -253,3 +256,19 @@ def test_service_role_can_write_everything_users_cannot(db: Db) -> None:
     db.as_service()
     db.x("update public.runs set status = 'running', steps = 3 where id = %s", run)
     assert db.q("select status, steps from public.runs where id = %s", run) == [{"status": "running", "steps": 3}]
+
+
+def test_soft_delete_function_is_owner_only_and_not_callable_by_anon(db: Db) -> None:
+    a, b = db.new_user(), db.new_user()
+    run = db.make_run(a, "public")
+    db.as_(b)
+    assert db.q("select public.soft_delete_run(%s) v", run) == [{"v": False}]
+    db.as_(None)
+    db.x("savepoint s")
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        db.q("select public.soft_delete_run(%s)", run)
+    db.x("rollback to savepoint s")
+    db.as_(a)
+    assert db.q("select public.soft_delete_run(%s) v", run) == [{"v": True}]
+    db.as_service()
+    assert db.q("select deleted_at is not null d from public.runs where id = %s", run) == [{"d": True}]

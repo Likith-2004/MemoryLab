@@ -5,13 +5,25 @@ Set MEMORYLAB_REQUIRE_DB=1 (the gate does) to make an unreachable database a fai
 
 import json
 import os
+import time
 import uuid
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from typing import Any
 
 import psycopg
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
+from fastapi.testclient import TestClient
+from jwt import PyJWT
+from jwt.algorithms import ECAlgorithm
 from psycopg.rows import dict_row
+
+from api.app import create_app
+from api.auth import JwtVerifier
+from api.db import Database
+from api.orchestrator_client import UpstreamError
+from api.settings import Settings
 
 DB_URL = os.environ.get("MEMORYLAB_DB_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres")
 
@@ -91,3 +103,143 @@ def db(admin_conn: psycopg.Connection[dict[str, Any]]) -> Iterator[Db]:
     d = Db(admin_conn)
     yield d
     d.close()
+
+
+# ---------------------------------------------------------------- app-level fixtures
+
+
+
+KID = "test-key-1"
+AUD = "authenticated"
+PRIVATE = ec.generate_private_key(ec.SECP256R1())
+JWK = {**__import__("json").loads(ECAlgorithm.to_jwk(PRIVATE.public_key())), "kid": KID, "alg": "ES256", "use": "sig"}
+CANARY_KEY = "sk-ant-CANARY-0123456789abcdef"
+
+
+def mint(sub: str | None, *, aud: str = AUD, exp_in: int = 600, alg: str = "ES256", kid: str | None = KID,
+         role: str = "authenticated", key: Any = PRIVATE, extra: dict[str, Any] | None = None) -> str:
+    now = int(time.time())
+    claims: dict[str, Any] = {"aud": aud, "exp": now + exp_in, "iat": now, "role": role, **(extra or {})}
+    if sub is not None:
+        claims["sub"] = sub
+    headers = {"kid": kid} if kid else {}
+    return PyJWT().encode(claims, key, algorithm=alg, headers=headers)
+
+
+def bearer(sub: str, **kw: Any) -> dict[str, str]:
+    return {"authorization": "Bearer " + mint(sub, **kw)}
+
+
+@dataclass
+class FakeOrchestrator:
+    submitted: list[dict[str, Any]] = field(default_factory=list)
+    stopped: list[tuple[str, str]] = field(default_factory=list)
+    killed: list[tuple[str, str, str]] = field(default_factory=list)
+    breaker_calls: list[tuple[bool, str, str]] = field(default_factory=list)
+    fail_with: UpstreamError | None = None
+
+    def submit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.fail_with:
+            raise self.fail_with
+        self.submitted.append(payload)
+        return {"run_id": payload["run_id"], "status": "queued"}
+
+    def stop(self, run_id: str, actor: str) -> str:
+        self.stopped.append((run_id, actor))
+        return "stopping"
+
+    def kill(self, run_id: str, actor: str, reason: str) -> str:
+        self.killed.append((run_id, actor, reason))
+        return "killed"
+
+    def snapshot(self) -> dict[str, Any]:
+        return {"running": [], "queued": []}
+
+    def breaker(self, open_: bool, actor: str, reason: str) -> dict[str, Any]:
+        self.breaker_calls.append((open_, actor, reason))
+        return {"open": open_}
+
+
+class FakeKeys:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.accept = True
+
+    def validate(self, provider: str, api_key: str) -> bool:
+        self.calls.append((provider, api_key))
+        return self.accept and api_key == CANARY_KEY
+
+
+@dataclass
+class Env:
+    admin: psycopg.Connection[dict[str, Any]]
+    client: TestClient
+    orch: FakeOrchestrator
+    keys: FakeKeys
+    settings: Settings
+    users: list[str]
+    games: list[str]
+
+    def user(self, role: str = "user") -> str:
+        uid = str(uuid.uuid4())
+        self.admin.execute(
+            "insert into auth.users (id, email, instance_id, aud, role) "
+            "values (%s, %s, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated')",
+            (uid, f"{uid}@example.test"))
+        if role == "admin":
+            self.admin.execute("update public.profiles set role = 'admin' where id = %s", (uid,))
+        self.users.append(uid)
+        return uid
+
+    def game(self, name: str | None = None, public: bool = True) -> str:
+        name = name or "g" + uuid.uuid4().hex[:10]
+        self.admin.execute("insert into public.games (name, rom_sha256, licence, state_map_version, public) "
+                           "values (%s, %s, 'CC0', '1', %s)", (name, "d" * 64, public))
+        self.games.append(name)
+        return name
+
+    def run(self, owner: str, visibility: str = "private", **cols: Any) -> str:
+        cfg = self.admin.execute("insert into public.run_configs (owner_id, config_json, config_hash, mode) "
+                                 "values (%s, '{}', %s, 'demo') returning id", (owner, "a" * 64)).fetchone()["id"]  # type: ignore[index]
+        rid = str(self.admin.execute(
+            "insert into public.runs (owner_id, config_id, visibility, cap_steps, cap_tokens, cap_wall_s) "
+            "values (%s, %s, %s, 10, 1000, 60) returning id", (owner, cfg, visibility)).fetchone()["id"])  # type: ignore[index]
+        for k, v in cols.items():
+            self.admin.execute(f"update public.runs set {k} = %s where id = %s", (v, rid))
+        return rid
+
+
+def make_settings(**kw: Any) -> Settings:
+    return Settings(jwks_url="http://unused.invalid/jwks", db_url=DB_URL, issuer=None, **kw)
+
+
+@pytest.fixture
+def make_env(admin_conn: psycopg.Connection[dict[str, Any]], tmp_path: Any) -> Iterator[Any]:
+    created: list[tuple[Env, Database]] = []
+
+    def build(**settings_kw: Any) -> Env:
+        settings = make_settings(**settings_kw)
+        db = Database(DB_URL, max_size=4)
+        verifier = JwtVerifier(lambda: {"keys": [JWK]}, audience=AUD, issuer=None,
+                               algorithms=settings.allowed_algorithms)
+        orch, keys = FakeOrchestrator(), FakeKeys()
+        from runlog.store import LocalObjectStore
+        app = create_app(settings, verifier=verifier, db=db, orchestrator=orch, key_validator=keys,
+                         store=LocalObjectStore(tmp_path / "store"), ip_salt=b"test-salt")
+        env = Env(admin_conn, TestClient(app, raise_server_exceptions=False), orch, keys, settings, [], [])
+        created.append((env, db))
+        return env
+
+    yield build
+    for env, db in created:
+        db.close()
+        for uid in env.users:
+            admin_conn.execute("delete from auth.users where id = %s", (uid,))   # cascades to profiles, runs, ...
+        for name in env.games:
+            admin_conn.execute("delete from public.games where name = %s", (name,))
+
+
+@pytest.fixture
+def env(make_env: Any) -> Env:
+    e: Env = make_env()
+    return e
