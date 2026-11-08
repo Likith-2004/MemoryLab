@@ -30,7 +30,7 @@ All values come from the environment; secrets are never defaults. Tokens are >= 
 | Accounts service | `uvicorn --factory accounts.main:build` (internal network only) | `MEMORYLAB_SERVICE_DB_URL` (service-role access), `MEMORYLAB_ORCHESTRATOR_URL`/`_TOKEN`, `MEMORYLAB_AUTH_URL`, `MEMORYLAB_AUTH_SERVICE_KEY`, `MEMORYLAB_ACCOUNTS_TOKEN` |
 | Reaper | `python -m orchestrator.reaper` | `MEMORYLAB_SERVICE_DB_URL`, `MEMORYLAB_INGEST_URL`, `MEMORYLAB_TOKEN_SECRET` (the orchestrator's), `MEMORYLAB_ORCHESTRATOR_URL`/`_TOKEN`, optional `MEMORYLAB_REAPER_PERIOD_S` (60) |
 
-Migrations are `infra/supabase/migrations/*` (16 so far); the local password for `memorylab_api` is set by `infra/supabase/seed.sql` (never in production). `api_private` must never be added to PostgREST's `schemas`.
+Migrations are `infra/supabase/migrations/*` (16 so far); the local password for `memorylab_api` is set by `infra/supabase/seed.sql` (never in production). Gateway: block `/auth/v1/signup`, `/auth/v1/otp` and `/auth/v1/recover` (enumeration; use `/api/v1/auth/*`). CLI: plain http is refused except to loopback (`MEMORYLAB_ALLOW_INSECURE=1` for dev). `api_private` must never be added to PostgREST's `schemas`.
 
 ## Environment on this machine
 - rgbds 1.0.1 at `~/.local/opt/rgbds-1.0.1` (build tool for fixture ROMs).

@@ -195,6 +195,7 @@ class FakeGateway:
         self.existing: set[str] = set()
         self.signups: list[str] = []
         self.recovered: list[str] = []
+        self.magic: list[str] = []
         self.down = False
 
     def signup(self, email: str, password: str) -> bool:
@@ -205,7 +206,16 @@ class FakeGateway:
         return email not in self.existing
 
     def recover(self, email: str) -> None:
+        if self.down:
+            from api.auth import AuthUnavailable
+            raise AuthUnavailable
         self.recovered.append(email)
+
+    def magic_link(self, email: str) -> None:
+        if self.down:
+            from api.auth import AuthUnavailable
+            raise AuthUnavailable
+        self.magic.append(email)
 
 
 class FakeKeys:
@@ -282,12 +292,14 @@ def make_env(admin_conn: psycopg.Connection[dict[str, Any]], tmp_path: Any) -> I
         accounts = FakeAccounts()
         from runlog.store import LocalObjectStore
 
+        from api.mailjobs import MailJobs
         from api.signing import LocalUrlSigner
         store = LocalObjectStore(tmp_path / "store")
         clock = [1_000_000.0]                                        # the signer's clock, for expiry tests
         signer = LocalUrlSigner("http://api.test", b"s" * 40, clock=lambda: clock[0])
         app = create_app(settings, verifier=verifier, db=db, orchestrator=orch, key_validator=keys, session_checker=sessions, auth_gateway=gateway,
                          accounts=accounts, store=store, signer=signer if with_signer else None,
+                         mail_jobs=MailJobs(inline=True),
                          ip_salt=b"test-salt")
         env = Env(admin_conn, TestClient(app, raise_server_exceptions=False, base_url="http://api.test"), orch, keys,
                   sessions, gateway, accounts, store, signer, clock, settings, [], [])

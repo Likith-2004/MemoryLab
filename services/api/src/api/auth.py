@@ -108,6 +108,11 @@ class AuthGateway(Protocol):
 
     def recover(self, email: str) -> None: ...
 
+    def magic_link(self, email: str) -> None:
+        """Email a sign-in link/code to an existing account. Silent for an unknown address; raises AuthUnavailable only
+        when the auth service cannot be reached or fails."""
+        ...
+
 
 class AuthUnavailable(Exception):
     pass
@@ -140,6 +145,18 @@ class GoTrueGateway:
 
     def recover(self, email: str) -> None:
         try:
-            self._http.post("/recover", json={"email": email})
+            resp = self._http.post("/recover", json={"email": email})
         except httpx.HTTPError:
             raise AuthUnavailable from None
+        if resp.status_code >= 500:
+            raise AuthUnavailable
+
+    def magic_link(self, email: str) -> None:
+        """GoTrue answers 200 for a known address, 422 `otp_disabled` for an unknown one (we never let it create
+        users) and 429 for a repeat within its mail window: all three are the same to our caller."""
+        try:
+            resp = self._http.post("/otp", json={"email": email, "create_user": False})
+        except httpx.HTTPError:
+            raise AuthUnavailable from None
+        if resp.status_code >= 500:
+            raise AuthUnavailable

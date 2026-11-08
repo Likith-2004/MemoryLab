@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from conftest import Env, bearer
-from test_gotrue import Auth, auth, real, stack  # noqa: F401  (fixtures)
+from test_gotrue import Auth, auth, real, real_factory, stack  # noqa: F401  (fixtures)
 from test_runs_create import body
 
 CONFIG = Path(__file__).resolve().parents[3] / "infra" / "supabase" / "config.toml"

@@ -175,6 +175,10 @@ Entry format for charter decisions: ID, context, options, choice, reason, how to
 
 **M6-19 Round-4 changes.** `experiments.run_ids` has no select privilege for user roles (column grants); the owner's list and run set come from `api_private.my_experiments` / `my_experiment_run_ids`, and a catalogue test lists every array/jsonb column readable by a user role (allowlist: `run_configs.config_json`, `runs.fork_patch`). Fork is disabled by default (`MEMORYLAB_FORK_ENABLED`, BLOCKED.md B-6) and refuses before any quota or key step. A WebSocket resume is at most 1/s per socket and charged to the viewer's read limit. Admin kill/breaker audit rows are committed as `requested` before the call and closed out as `ok`/`failed`/`unknown`; `audit_log` is append-only apart from that one transition.
 
+**M6-20 Mail endpoints.** `POST /api/v1/auth/magic-link` and `/auth/recover` answer 202 with the same message for known, unknown and rate-limited addresses (limits per IP and per address; 503 only if GoTrue is unreachable). GoTrue's `/otp` leaks existence (422 `otp_disabled`), recorded by a strict xfail test. The deployment gateway must block `/auth/v1/signup`, `/auth/v1/otp` and `/auth/v1/recover`; the CLI and web app use only the API endpoints.
+
+**M6-21 No timing oracle on the mail endpoints.** GoTrue sends mail synchronously only for real accounts (measured: ~7 ms known vs ~1 ms unknown for `/otp`). Signup, magic-link and recover validate input, charge the limits and answer 202 at once; the GoTrue calls run in a bounded in-process pool (`api.mailjobs.MailJobs`, 4 workers, 200 pending). Failures cannot reach the caller: they are logged as `kind` + sha256 prefix of the address + exception type (never the address) and counted (`failed`, `dropped`); the 503 path is gone. Password rules are checked locally (12..128 chars, stricter than GoTrue's configured 6 with no extra requirements). In-process, so a restart loses queued mails (acceptable: the user can retry).
+
 ## Open (not decided here)
 
 - Real public game and its RAM map (spec decision #1; Option A track).

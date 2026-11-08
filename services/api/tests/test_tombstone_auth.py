@@ -6,7 +6,7 @@ import httpx
 from accounts.eraser import TOMBSTONE_ID
 
 from conftest import Env
-from test_gotrue import PASSWORD, Auth, auth, real, stack  # noqa: F401  (fixtures)
+from test_gotrue import PASSWORD, Auth, auth, real, real_factory, stack  # noqa: F401  (fixtures)
 
 TOMBSTONE_EMAIL = "erased-user@memorylab.invalid"
 
