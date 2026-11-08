@@ -221,6 +221,9 @@ class Env:
     sessions: FakeSessions
     gateway: FakeGateway
     accounts: FakeAccounts
+    store: Any
+    signer: Any
+    clock: list[float]
     settings: Settings
     users: list[str]
     games: list[str]
@@ -262,7 +265,8 @@ def make_settings(**kw: Any) -> Settings:
 def make_env(admin_conn: psycopg.Connection[dict[str, Any]], tmp_path: Any) -> Iterator[Any]:
     created: list[tuple[Env, Database]] = []
 
-    def build(**settings_kw: Any) -> Env:
+    def build(signer: bool = True, **settings_kw: Any) -> Env:
+        with_signer = signer
         settings = make_settings(**settings_kw)
         db = Database(API_DB_URL, max_size=4)
         verifier = JwtVerifier(lambda: {"keys": [JWK]}, audience=AUD, issuer=None,
@@ -270,10 +274,16 @@ def make_env(admin_conn: psycopg.Connection[dict[str, Any]], tmp_path: Any) -> I
         orch, keys, sessions, gateway = FakeOrchestrator(), FakeKeys(), FakeSessions(), FakeGateway()
         accounts = FakeAccounts()
         from runlog.store import LocalObjectStore
+
+        from api.signing import LocalUrlSigner
+        store = LocalObjectStore(tmp_path / "store")
+        clock = [1_000_000.0]                                        # the signer's clock, for expiry tests
+        signer = LocalUrlSigner("http://api.test", b"s" * 40, clock=lambda: clock[0])
         app = create_app(settings, verifier=verifier, db=db, orchestrator=orch, key_validator=keys, session_checker=sessions, auth_gateway=gateway,
-                         accounts=accounts, store=LocalObjectStore(tmp_path / "store"), ip_salt=b"test-salt")
-        env = Env(admin_conn, TestClient(app, raise_server_exceptions=False), orch, keys, sessions, gateway,
-                  accounts, settings, [], [])
+                         accounts=accounts, store=store, signer=signer if with_signer else None,
+                         ip_salt=b"test-salt")
+        env = Env(admin_conn, TestClient(app, raise_server_exceptions=False, base_url="http://api.test"), orch, keys,
+                  sessions, gateway, accounts, store, signer, clock, settings, [], [])
         created.append((env, db))
         return env
 

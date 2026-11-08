@@ -23,6 +23,8 @@ class Settings:
     key_failures_per_user_per_hour: int = 5
     signup_per_ip_per_hour: int = 10
     write_limit_per_min: int = 30
+    blob_signing_secret: bytes = field(default=b"", repr=False)   # dev-only local signer; production presigns from S3
+    public_api_url: str = "http://127.0.0.1:8000"
     trusted_proxy_hops: int = 0       # proxies in front of the API whose X-Forwarded-For entry is trusted
 
     @classmethod
@@ -37,5 +39,7 @@ class Settings:
             orchestrator_token=os.environ.get("MEMORYLAB_ORCHESTRATOR_TOKEN", "").encode(),
             accounts_url=os.environ.get("MEMORYLAB_ACCOUNTS_URL", cls.accounts_url),
             accounts_token=os.environ.get("MEMORYLAB_ACCOUNTS_TOKEN", "").encode(),
+            blob_signing_secret=os.environ.get("MEMORYLAB_BLOB_SIGNING_SECRET", "").encode(),
+            public_api_url=os.environ.get("MEMORYLAB_PUBLIC_API_URL", cls.public_api_url),
             trusted_proxy_hops=int(os.environ.get("MEMORYLAB_TRUSTED_PROXY_HOPS", "0")),
         )

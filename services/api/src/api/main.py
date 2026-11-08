@@ -12,6 +12,7 @@ from .auth import GoTrueGateway, GoTrueSessionChecker, JwtVerifier, http_jwks_fe
 from .db import Database
 from .orchestrator_client import HttpOrchestrator
 from .settings import Settings
+from .signing import LocalUrlSigner
 
 
 class UnconfiguredKeyValidator:
@@ -33,4 +34,5 @@ def build() -> FastAPI:
         accounts=HttpAccounts(settings.accounts_url, settings.accounts_token),
         session_checker=GoTrueSessionChecker(settings.auth_url, settings.auth_apikey),
         auth_gateway=GoTrueGateway(settings.auth_url, settings.auth_apikey),
-        store=LocalObjectStore(os.environ["MEMORYLAB_OBJECT_STORE"]))
+        store=LocalObjectStore(os.environ["MEMORYLAB_OBJECT_STORE"]),
+        signer=LocalUrlSigner(settings.public_api_url, settings.blob_signing_secret) if settings.blob_signing_secret else None)

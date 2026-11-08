@@ -2,20 +2,23 @@
 through the caller's own database role so RLS applies; run-scoped routes share one visibility
 dependency that answers 404 for both missing and forbidden runs (no existence oracle)."""
 
+import bisect
 import difflib
 import hashlib
+import io
 import ipaddress
 import logging
 import re
 import secrets
 import uuid
+import zipfile
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi import Depends, FastAPI, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from ingest.app import BodyLimit, problem
 from labharness.agent import RunConfig
 from labharness.presets import CUSTOM_LABEL, MAX_CUSTOM_CHARS, PRESETS, custom_preset, get_preset
@@ -23,7 +26,9 @@ from labharness.providers.registry import PROVIDER_MODELS, check_model
 from psycopg.errors import RaiseException
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from runlog.eventlog import EventLogReader
-from runlog.redaction import ScrubFilter
+from runlog.lifecycle import FINAL
+from runlog.redaction import ScrubFilter, scan_bytes
+from runlog.store import NotFound as StoreNotFound
 from runlog.store import ObjectStore
 
 from .accounts_client import AccountsClient, AccountsError
@@ -32,11 +37,15 @@ from .db import Conn, Database
 from .limits import RateLimiter
 from .orchestrator_client import KeyValidator, OrchestratorClient, SubmitUnknown, UpstreamError
 from .settings import Settings
+from .signing import LocalUrlSigner, UrlSigner
 
 log = logging.getLogger("api")
 log.addFilter(ScrubFilter())
 MAX_BODY = 64 * 1024
 API = "/api/v1"
+SIGNED_URL_TTL_S = 60
+MAX_EXPORT_BYTES = 64 * 1024 * 1024        # the store's own object cap; also bounds the work of a re-scan
+_FRAME_KEY = re.compile(r"^runs/[0-9a-f-]{36}/frames/(\d{7})\.png$")
 _ACTIVE = ("queued", "starting", "running", "session_boundary", "dreaming", "stopping")   # runlog.lifecycle minus FINAL
 
 
@@ -201,7 +210,7 @@ class ApiError(Exception):
 
 def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orchestrator: OrchestratorClient,
                key_validator: KeyValidator, session_checker: SessionChecker, auth_gateway: AuthGateway,
-               accounts: AccountsClient, store: ObjectStore | None = None,
+               accounts: AccountsClient, store: ObjectStore | None = None, signer: UrlSigner | None = None,
                clock: Callable[[], float] | None = None, ip_salt: bytes | None = None) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, title="memorylab-api")
     app.add_middleware(BodyLimit, max_bytes=MAX_BODY)
@@ -268,6 +277,12 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
         if not limiter.allow(("read", who), settings.read_limit_per_min, 60):
             raise ApiError(429, "rate_limited", "Too many requests", {"retry-after": "60"})
 
+    def export_guard(request: Request, user: Annotated[User | None, Depends(bearer)]) -> None:
+        """An export re-scans a whole bundle, so it has its own, tighter, per-identity limit."""
+        who = user.id if user else f"ip:{_ip_hash(client_ip(request), salt)}"
+        if not limiter.allow(("export", who), 10, 60):
+            raise ApiError(429, "rate_limited", "Too many requests", {"retry-after": "60"})
+
     def write_guard(user: Annotated[User, Depends(require_user)]) -> None:
         if not limiter.allow(("write", user.id), settings.write_limit_per_min, 60):
             raise ApiError(429, "rate_limited", "Too many requests", {"retry-after": "60"})
@@ -280,6 +295,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     Sess = Annotated[Conn, Depends(session)]
     Guard = Depends(read_guard)
     WriteGuard = Depends(write_guard)
+    ExportGuard = Depends(export_guard)
 
     def load_visible_run(run_id: str, conn: Sess) -> dict[str, Any]:
         """The one place a run is looked up for a caller. The database decides visibility (owner, admin, or
@@ -557,6 +573,43 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
                             (run["id"],)).fetchall()
         return [_jsonable(r) for r in rows]
 
+    @app.get(API + "/runs/{run_id}/frames/{step}", dependencies=[Guard])
+    def frame(run: Run, step: Annotated[int, Path(ge=0, le=1_000_000)]) -> Response:
+        """302 to a 60 s signed URL for the nearest sampled frame at or before `step`; 404 if there is none."""
+        if store is None or signer is None:
+            raise ApiError(503, "internal", "frame storage unavailable")
+        prefix = f"runs/{run['id']}/frames/"
+        steps = sorted(int(m.group(1)) for k in store.list(prefix) if (m := _FRAME_KEY.match(k)))
+        at = bisect.bisect_right(steps, step) - 1
+        if at < 0:
+            raise NotFound
+        url = signer.sign_get(f"{prefix}{steps[at]:07d}.png", SIGNED_URL_TTL_S)
+        return RedirectResponse(url, status_code=302, headers={
+            "cache-control": "no-store", "referrer-policy": "no-referrer", "x-frame-step": str(steps[at])})
+
+    @app.get(API + "/runs/{run_id}/export", dependencies=[Guard, ExportGuard])
+    def export(run: Run, conn: Sess) -> dict[str, Any]:
+        """A signed URL for the bundle and its sha256, for finished runs whose log is sealed. The bundle is checked
+        against the recorded hash and the redaction scan is re-run over every file in it before a URL is issued."""
+        if store is None or signer is None:
+            raise ApiError(503, "internal", "export storage unavailable")
+        row = conn.execute("select status, bundle_sha256 from api_private.run_bundle(%s)", (run["id"],)).fetchone()
+        if row is None:
+            raise NotFound
+        if row["status"] not in FINAL or not row["bundle_sha256"]:
+            raise ApiError(409, "export_not_ready", "The run has not finished and been sealed yet")
+        key = f"runs/{run['id']}/bundle.zip"
+        try:
+            data = store.get(key)
+        except StoreNotFound:
+            raise ApiError(409, "export_not_ready", "The run has not finished and been sealed yet") from None
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != row["bundle_sha256"] or not _bundle_is_clean(data):
+            log.error("export refused run=%s", run["id"])
+            raise ApiError(409, "export_refused", "The bundle failed verification")
+        return {"sha256": digest, "bytes": len(data), "url": signer.sign_get(key, SIGNED_URL_TTL_S),
+                "expires_in": SIGNED_URL_TTL_S}
+
     @app.get(API + "/runs/{run_id}/memory", dependencies=[Guard])
     def memory_tree(run: Run, conn: Sess, at_step: Annotated[int, Query(ge=0)] = 1_000_000) -> list[dict[str, Any]]:
         rows = conn.execute("select path, chars, version, deleted from api_private.run_memory_tree(%s, %s)",
@@ -627,10 +680,43 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     def admin_breaker(body: BreakerIn, admin: Admin) -> dict[str, Any]:
         return orchestrator.breaker(body.open, admin.id, body.reason)
 
+    if isinstance(signer, LocalUrlSigner):
+        local_signer: LocalUrlSigner = signer
+
+        @app.get(LocalUrlSigner.PATH + "{token}")
+        def local_blob(token: str, exp: str = "", sig: str = "") -> Response:
+            """Development stand-in for the bucket: the signature is the only credential."""
+            key = local_signer.verify(token, exp, sig)
+            if key is None or store is None:
+                raise NotFound
+            kind = {"png": ("image/png", None), "zip": ("application/zip", 'attachment; filename="bundle.zip"')}.get(
+                key.rsplit(".", 1)[-1])
+            if kind is None:
+                raise NotFound
+            try:
+                data = store.get(key)
+            except StoreNotFound:
+                raise NotFound from None
+            headers = {"content-disposition": kind[1]} if kind[1] else {}
+            return Response(data, media_type=kind[0], headers={**headers, "cache-control": "no-store"})
+
     return app
 
 
 # ---------------------------------------------------------------- helpers
+
+def _bundle_is_clean(data: bytes) -> bool:
+    """The export's redaction scan, re-run: no file inside the zip may contain credential-like text. A zip that cannot
+    be read, or that expands past a sane size, is refused rather than served."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            infos = zf.infolist()
+            if sum(i.file_size for i in infos) > 4 * MAX_EXPORT_BYTES:
+                return False
+            return not any(scan_bytes(zf.read(i)) for i in infos)
+    except (zipfile.BadZipFile, OSError, RuntimeError, ValueError):
+        return False
+
 
 _CURSOR = re.compile(r"^([0-9T:.+\-Z]{16,40})\|([0-9a-f-]{36})$")
 
