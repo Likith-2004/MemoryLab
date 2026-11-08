@@ -283,16 +283,21 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
         if not limiter.allow(("export", who), 10, 60):
             raise ApiError(429, "rate_limited", "Too many requests", {"retry-after": "60"})
 
-    def write_guard(user: Annotated[User, Depends(require_user)]) -> None:
-        if not limiter.allow(("write", user.id), settings.write_limit_per_min, 60):
-            raise ApiError(429, "rate_limited", "Too many requests", {"retry-after": "60"})
-
     def session(user: Annotated[User | None, Depends(bearer)]) -> Any:
         with db.session(user) as conn:
             yield conn
 
     Authed = Annotated[User, Depends(require_user)]
     Sess = Annotated[Conn, Depends(session)]
+    def write_guard(user: Authed, conn: Sess) -> None:
+        """Every user write: the account must still exist (a token outlives an erase by up to its TTL; that is a 401,
+        not a foreign-key failure further down), then the per-user limit."""
+        row = conn.execute("select erased_at from public.profiles where id = %s", (user.id,)).fetchone()
+        if row is None or row["erased_at"] is not None:
+            raise Unauthenticated
+        if not limiter.allow(("write", user.id), settings.write_limit_per_min, 60):
+            raise ApiError(429, "rate_limited", "Too many requests", {"retry-after": "60"})
+
     Guard = Depends(read_guard)
     WriteGuard = Depends(write_guard)
     ExportGuard = Depends(export_guard)
@@ -335,7 +340,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
         prof = conn.execute("select id, handle, role, created_at from public.profiles where id = %s",
                             (user.id,)).fetchone()
         if prof is None:
-            raise NotFound
+            raise Unauthenticated               # a token for an erased account
         active = conn.execute("select count(*) n from public.runs where owner_id = %s and status = any(%s) "
                               "and deleted_at is null", (user.id, list(_ACTIVE))).fetchone()["n"]  # type: ignore[index]
         return {**_jsonable(prof), "active_runs": active, "limits": {
@@ -406,6 +411,8 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
                parent: dict[str, Any] | None = None, fork_patch: dict[str, Any] | None = None) -> dict[str, Any]:
         """The one create path (new run and fork): lockout, one-active-run, quota, key check, the api_private
         function, commit, submit. Everything before the function call costs nothing but the read guard."""
+        if not _account_is_live(conn, user):                      # before any quota or provider call is spent
+            raise Unauthenticated
         if limiter.count(("keyfail", user.id), 3600) >= settings.key_failures_per_user_per_hour:
             raise ApiError(429, "rate_limited", "Run creation is locked for an hour", {"retry-after": "3600"})
         if _has_active_run(conn, user):                           # cheap early answer; the DB function is the authority
@@ -646,6 +653,8 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
         try:
             conn.execute("select api_private.file_report(%s, %s)", (run["id"], body.reason))
         except RaiseException as exc:
+            if "account_erased" in str(exc) or "not_authenticated" in str(exc):
+                raise Unauthenticated from None
             if "report_rate_limited" in str(exc):
                 raise ApiError(429, "rate_limited", "Too many reports", {"retry-after": "3600"}) from None
             if "run_not_found" in str(exc):
@@ -760,6 +769,11 @@ def _memory_version(conn: Conn, run_id: str, path: str, version: int | None) -> 
 
 def _active_run() -> ApiError:
     return ApiError(409, "rate_limited", "You already have an active run", {"retry-after": "60"})
+
+
+def _account_is_live(conn: Conn, user: User) -> bool:
+    row = conn.execute("select erased_at from public.profiles where id = %s", (user.id,)).fetchone()
+    return row is not None and row["erased_at"] is None
 
 
 def _has_active_run(conn: Conn, user: User) -> bool:

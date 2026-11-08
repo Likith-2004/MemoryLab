@@ -134,6 +134,8 @@ class GoTrueGateway:
             code = None
         if resp.status_code == 422 and code == "user_already_exists":
             return False
+        if resp.status_code == 429 and code == "over_email_send_rate_limit":
+            return False        # GoTrue answers this for an account whose confirmation mail just went out: it exists
         raise AuthUnavailable
 
     def recover(self, email: str) -> None:
