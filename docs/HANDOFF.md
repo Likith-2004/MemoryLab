@@ -20,7 +20,7 @@ make gate          # needs the stack above; MEMORYLAB_REQUIRE_DB=1 is set by the
 supabase stop --workdir infra
 ```
 `supabase db reset --workdir infra` re-applies the migrations (needed after adding one).
-Run the API: `MEMORYLAB_JWKS_URL=... MEMORYLAB_ORCHESTRATOR_TOKEN=... MEMORYLAB_OBJECT_STORE=... uvicorn --factory api.main:build`.
+Run the API: `MEMORYLAB_JWKS_URL=... MEMORYLAB_JWT_ISSUER=... MEMORYLAB_ORCHESTRATOR_TOKEN=... MEMORYLAB_OBJECT_STORE=... uvicorn --factory api.main:build`. `MEMORYLAB_JWT_ISSUER` is required. `MEMORYLAB_DB_URL` must be the `memorylab_api` login role (never `postgres`; migration 5 creates it, the password is set outside the repo). Behind a gateway set `MEMORYLAB_TRUSTED_PROXY_HOPS` to the number of proxies, or every caller shares one IP.
 
 ## Environment on this machine
 - rgbds 1.0.1 at `~/.local/opt/rgbds-1.0.1` (build tool for fixture ROMs).

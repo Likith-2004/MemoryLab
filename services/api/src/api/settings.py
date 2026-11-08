@@ -11,7 +11,7 @@ class Settings:
     auth_apikey: str = field(default="", repr=False)
     audience: str = "authenticated"
     issuer: str | None = None
-    db_url: str = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
+    db_url: str = "postgresql://memorylab_api:memorylab-api-local@127.0.0.1:54322/postgres"   # local; no superuser
     orchestrator_url: str = "http://127.0.0.1:8300"
     orchestrator_token: bytes = field(default=b"", repr=False)
     allowed_algorithms: tuple[str, ...] = ("ES256", "RS256")   # never HS*/none: no shared secret in the API
@@ -27,7 +27,7 @@ class Settings:
     def from_env(cls) -> Settings:
         return cls(
             jwks_url=os.environ["MEMORYLAB_JWKS_URL"],
-            issuer=os.environ.get("MEMORYLAB_JWT_ISSUER"),
+            issuer=os.environ["MEMORYLAB_JWT_ISSUER"],       # required: an unset issuer would leave `iss` unchecked
             auth_url=os.environ.get("MEMORYLAB_AUTH_URL", cls.auth_url),
             auth_apikey=os.environ.get("MEMORYLAB_AUTH_APIKEY", ""),
             db_url=os.environ.get("MEMORYLAB_DB_URL", cls.db_url),

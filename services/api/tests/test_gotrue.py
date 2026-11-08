@@ -15,7 +15,7 @@ import httpx
 import pytest
 
 from api.auth import GoTrueGateway, GoTrueSessionChecker, JwtVerifier, http_jwks_fetcher
-from conftest import DB_URL, Env
+from conftest import API_DB_URL, Env
 
 INFRA = Path(__file__).resolve().parents[3] / "infra"
 PASSWORD = "pw-" + secrets.token_urlsafe(18)             # per-run throwaway for local test users
@@ -111,7 +111,7 @@ def real(make_env: Any, stack: dict[str, str], tmp_path: Any) -> Env:
     settings = make_settings()
     verifier = JwtVerifier(http_jwks_fetcher(stack["API_URL"] + "/auth/v1/.well-known/jwks.json"),
                            audience="authenticated", issuer=None, algorithms=settings.allowed_algorithms)
-    db = Database(DB_URL, max_size=3)
+    db = Database(API_DB_URL, max_size=3)
     orch = FakeOrchestrator()
     app = create_app(settings, verifier=verifier, db=db, orchestrator=orch, key_validator=FakeKeys(),
                      session_checker=GoTrueSessionChecker(stack["API_URL"] + "/auth/v1", stack["PUBLISHABLE_KEY"]),

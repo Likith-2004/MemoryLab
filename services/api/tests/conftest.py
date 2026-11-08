@@ -25,7 +25,8 @@ from api.db import Database
 from api.orchestrator_client import UpstreamError
 from api.settings import Settings
 
-DB_URL = os.environ.get("MEMORYLAB_DB_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres")
+DB_URL = os.environ.get("MEMORYLAB_DB_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres")   # admin: seeding
+API_DB_URL = os.environ.get("MEMORYLAB_API_DB_URL", Settings.db_url)                                       # what the API uses
 
 
 @pytest.fixture(scope="session")
@@ -238,7 +239,7 @@ class Env:
 
 
 def make_settings(**kw: Any) -> Settings:
-    return Settings(jwks_url="http://unused.invalid/jwks", db_url=DB_URL, issuer=None, **kw)
+    return Settings(jwks_url="http://unused.invalid/jwks", db_url=API_DB_URL, issuer=None, **kw)
 
 
 @pytest.fixture
@@ -247,7 +248,7 @@ def make_env(admin_conn: psycopg.Connection[dict[str, Any]], tmp_path: Any) -> I
 
     def build(**settings_kw: Any) -> Env:
         settings = make_settings(**settings_kw)
-        db = Database(DB_URL, max_size=4)
+        db = Database(API_DB_URL, max_size=4)
         verifier = JwtVerifier(lambda: {"keys": [JWK]}, audience=AUD, issuer=None,
                                algorithms=settings.allowed_algorithms)
         orch, keys, sessions, gateway = FakeOrchestrator(), FakeKeys(), FakeSessions(), FakeGateway()

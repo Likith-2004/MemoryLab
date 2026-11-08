@@ -290,3 +290,45 @@ def test_a_deleted_memory_file_is_gone_from_the_tree_and_the_default_read_but_ol
     assert env.client.get(f"/api/v1/runs/{run}/memory/file", params={"path": "a.md", "version": 3}).status_code == 404
     before = env.client.get(f"/api/v1/runs/{run}/memory", params={"at_step": 1}).json()
     assert [(f["path"], f["version"]) for f in before] == [("a.md", 2)]
+
+
+# ---------------------------------------------------------------- login role and required issuer (round 1, fix 7)
+
+def test_the_default_database_role_is_not_a_superuser_and_does_not_bypass_rls() -> None:
+    from api.db import Database
+    from api.settings import Settings
+    assert Settings.db_url.startswith("postgresql://memorylab_api:")
+    db = Database(Settings.db_url, max_size=1)
+    try:
+        with db.pool.connection() as conn:                     # a pool connection before apply_identity
+            row = conn.execute("select rolbypassrls, rolsuper, rolinherit from pg_roles "
+                               "where rolname = current_user").fetchone()
+            assert row == {"rolbypassrls": False, "rolsuper": False, "rolinherit": False}
+    finally:
+        db.close()
+
+
+def test_a_connection_that_skips_apply_identity_can_read_nothing() -> None:
+    import psycopg
+
+    from api.db import Database
+    from api.settings import Settings
+    db = Database(Settings.db_url, max_size=1)
+    try:
+        with db.pool.connection() as conn:
+            for table in ("runs", "run_configs", "profiles", "reports"):
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    conn.execute(f"select 1 from public.{table}")
+                conn.rollback()
+    finally:
+        db.close()
+
+
+def test_the_jwt_issuer_is_required_in_production_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    from api.settings import Settings
+    monkeypatch.setenv("MEMORYLAB_JWKS_URL", "http://jwks.invalid")
+    monkeypatch.delenv("MEMORYLAB_JWT_ISSUER", raising=False)
+    with pytest.raises(KeyError, match="MEMORYLAB_JWT_ISSUER"):
+        Settings.from_env()
+    monkeypatch.setenv("MEMORYLAB_JWT_ISSUER", "https://auth.example/auth/v1")
+    assert Settings.from_env().issuer == "https://auth.example/auth/v1"

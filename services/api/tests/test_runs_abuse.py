@@ -10,7 +10,7 @@ import pytest
 from api.auth import User
 from api.db import Database
 from api.orchestrator_client import UpstreamError
-from conftest import DB_URL, Env, bearer
+from conftest import API_DB_URL, Env, bearer
 from test_runs_create import body, finish
 
 
@@ -48,7 +48,7 @@ def test_a_second_create_while_a_run_is_active_is_409_before_any_work(env: Env) 
 
 def test_two_threads_racing_into_the_create_function_make_one_run(env: Env) -> None:
     uid = env.user()
-    db = Database(DB_URL, max_size=4)
+    db = Database(API_DB_URL, max_size=4)
     barrier = threading.Barrier(2)
 
     def attempt(_: int) -> str:
