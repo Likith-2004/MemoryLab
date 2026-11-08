@@ -2,6 +2,13 @@
 
 Format per milestone: scope, changes, tests/evidence, deviations, tag.
 
+## M5: sandbox and orchestrator (branch `m5-sandbox`, tag `m5-done`)
+
+- Egress allowlist proxy, worker (stdin job, heartbeats, graceful stop), orchestrator (validation against server maxima, queue/TTL/limits/breaker, hardened container per run, heartbeat/wall kill, finalisation, audit), Dockerfiles with lockfile-hashed deps and pruned SDL libraries.
+- Ingest: per-scope batch numbering, status endpoint, auth before body parsing.
+- Tests: real-container probes (hardening, no egress, no key in inspect/top/environ, pids/memory limits, heartbeat kill). DEVIATION: Docker, not gVisor (M5-1).
+- NOT RUN: gVisor; real provider egress.
+
 ## M4: event log, manifest, replay, export, ingest, redaction (branch `m4-runlog`, tag `m4-done`)
 
 - `packages/runlog`: strict event model, run lifecycle state machine with writer roles, redaction (exact key + encodings + patterns), object store protocol + local implementation, zstd-segmented gapless event log with checksums and crash recovery, write-once sealed manifest, deterministic export bundle with credential scan, replay/verification (log integrity, detector recomputation, **re-execution of recorded actions against the emulator**), worker sinks (redacting, local, HTTP with idempotent batches).

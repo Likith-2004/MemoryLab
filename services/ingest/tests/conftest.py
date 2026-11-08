@@ -46,11 +46,11 @@ class Env:
                                 headers=self.headers(run_id, scope))
 
     def start(self, run_id: str, *, worker: bool = True):  # type: ignore[no-untyped-def]
-        """orchestrator: starting (batch 1), worker: running (batch 2)."""
+        """orchestrator: starting (its batch 1), worker: running (its batch 1)."""
         r1 = self.post(run_id, 1, [ev("run.state", state="starting")], "orchestrator")
         assert r1.status_code == 200, r1.text
         if worker:
-            r2 = self.post(run_id, 2, [ev("run.state", state="running")])
+            r2 = self.post(run_id, 1, [ev("run.state", state="running")])
             assert r2.status_code == 200, r2.text
 
 

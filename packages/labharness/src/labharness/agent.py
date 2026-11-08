@@ -94,9 +94,44 @@ class RunConfig:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, doc: object) -> RunConfig:
+        """Strict inverse of `to_dict` for untrusted input: closed key sets, exact types."""
+        d = _closed(doc, "run_config", {"provider", "model_id", "preset_ref", "mode"},
+                    {"memory", "inject_path", "inject_cap_chars", "observation", "screenshots", "caps"})
+        for key in ("provider", "model_id", "preset_ref", "mode"):
+            if not isinstance(d[key], str):
+                raise ValueError(f"run_config.{key} must be a string")  # noqa: TRY004
+        kwargs: dict[str, Any] = {k: d[k] for k in ("provider", "model_id", "preset_ref", "mode")}
+        if "memory" in d:
+            kwargs["memory"] = MemoryConfig(**_closed(d["memory"], "memory", set(), {
+                "enabled", "max_files", "max_file_chars", "max_total_chars", "max_history_rows", "max_history_chars"}))
+        if "observation" in d:
+            obs = _closed(d["observation"], "observation", set(), {"hide_extras", "show_milestones"})
+            hide = obs.get("hide_extras", [])
+            if not isinstance(hide, list) or not all(isinstance(x, str) for x in hide):
+                raise ValueError("observation.hide_extras must be a list of strings")
+            kwargs["observation"] = ObservationConfig(tuple(hide), obs.get("show_milestones", False))
+        if "screenshots" in d:
+            kwargs["screenshots"] = ScreenshotPolicy(**_closed(d["screenshots"], "screenshots", set(), {"mode", "k", "frame_scale"}))
+        if "caps" in d:
+            kwargs["caps"] = Caps(**_closed(d["caps"], "caps", set(), {
+                "max_steps", "max_tokens", "max_wall_s", "max_output_tokens", "max_tool_calls_per_step",
+                "context_steps", "call_timeout_s"}))
+        for key in ("inject_path", "inject_cap_chars"):
+            if key in d:
+                kwargs[key] = d[key]
+        return cls(**kwargs)
+
     @property
     def config_hash(self) -> str:
         return hashlib.sha256(canonical_json(self.to_dict())).hexdigest()
+
+
+def _closed(doc: object, what: str, required: set[str], optional: set[str]) -> dict[str, Any]:
+    if not isinstance(doc, dict) or not required <= set(doc) or not set(doc) <= required | optional:
+        raise ValueError(f"{what}: expected an object with keys {sorted(required)} (+ optional {sorted(optional)})")
+    return doc
 
 
 class EventSink(Protocol):

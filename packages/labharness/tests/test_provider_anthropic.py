@@ -350,3 +350,17 @@ def test_canary_key_is_found_nowhere_after_every_kind_of_failure(caplog: pytest.
     p, _ = provider(Rec(resp()))
     seen += [repr(p.step(req())), caplog.text]
     assert not [s for s in seen if CANARY in s or CANARY[:20] in s]
+
+
+@pytest.mark.parametrize("proxy", ["http://egress:3128", "http://ml-egress.internal:3128", "http://10.0.0.5:8080"])
+def test_proxy_option_accepts_plain_host_port(proxy: str) -> None:
+    p = AnthropicProvider(SecretKey(CANARY), "claude-sonnet-5-5", proxy=proxy)
+    assert p._client.trust_env is False
+    p.close()
+
+
+@pytest.mark.parametrize("proxy", ["https://egress:3128", "http://user:pw@egress:3128", "http://egress:3128/path", "egress:3128",
+                                   "http://egress", "http://eg ress:3128", "socks5://egress:1080", ""])
+def test_proxy_option_rejects_credentials_paths_and_other_schemes(proxy: str) -> None:
+    with pytest.raises(ValueError, match="proxy"):
+        AnthropicProvider(SecretKey(CANARY), "claude-sonnet-5-5", proxy=proxy)

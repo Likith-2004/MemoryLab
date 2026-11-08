@@ -14,7 +14,7 @@ from runlog.eventlog import IndexEntry
 class RunRecord:
     run_id: str
     status: str | None = None
-    next_batch_no: int = 1
+    next_batch_no: dict[str, int] = field(default_factory=lambda: {"worker": 1, "orchestrator": 1})
     event_count: int = 0
     bytes_total: int = 0
     frames: int = 0
@@ -23,7 +23,7 @@ class RunRecord:
     score: int = 0
     closed: bool = False
     manifest_sealed: bool = False
-    last_ack: dict[str, Any] | None = None
+    last_ack: dict[str, dict[str, Any]] = field(default_factory=dict)  # per scope
     bundle_sha256: str | None = None
 
 
@@ -33,6 +33,13 @@ class RunRepository(Protocol):
     def save(self, record: RunRecord) -> None: ...
     def add_index(self, run_id: str, entries: list[IndexEntry]) -> None: ...
     def add_memory_rows(self, run_id: str, rows: list[dict[str, Any]]) -> None: ...
+
+
+def _copy(record: RunRecord) -> RunRecord:
+    clone = RunRecord(**record.__dict__)
+    clone.next_batch_no = dict(record.next_batch_no)
+    clone.last_ack = {k: dict(v) for k, v in record.last_ack.items()}
+    return clone
 
 
 @dataclass
@@ -50,7 +57,7 @@ class InMemoryRunRepository:
 
     def get(self, run_id: str) -> RunRecord | None:
         record = self.runs.get(run_id)
-        return None if record is None else RunRecord(**record.__dict__)
+        return None if record is None else _copy(record)
 
     @contextmanager
     def _held(self, run_id: str) -> Iterator[None]:
@@ -63,7 +70,7 @@ class InMemoryRunRepository:
         return self._held(run_id)
 
     def save(self, record: RunRecord) -> None:
-        self.runs[record.run_id] = RunRecord(**record.__dict__)
+        self.runs[record.run_id] = _copy(record)
 
     def add_index(self, run_id: str, entries: list[IndexEntry]) -> None:
         self.index.setdefault(run_id, []).extend(entries)

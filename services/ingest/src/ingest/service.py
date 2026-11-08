@@ -114,10 +114,11 @@ class IngestService:
             record = self._record(run_id)
             if record.closed:
                 raise Conflict("the run is closed")
-            if batch_no == record.next_batch_no - 1 and record.last_ack is not None:
-                return record.last_ack  # a retry of the batch we already took: acknowledge, never duplicate
-            if batch_no != record.next_batch_no:
-                raise Conflict(f"expected batch {record.next_batch_no}")
+            expected = record.next_batch_no[claims.scope]  # worker and orchestrator number their batches separately
+            if batch_no == expected - 1 and claims.scope in record.last_ack:
+                return record.last_ack[claims.scope]  # a retry of the batch we already took: acknowledge, never duplicate
+            if batch_no != expected:
+                raise Conflict(f"expected batch {expected}")
             if record.status in FINAL:
                 raise Conflict("the run has ended")
             if record.event_count + len(events) > self.limits.max_events_per_run:
@@ -155,10 +156,11 @@ class IngestService:
             record.status = status
             record.event_count += len(written)
             record.bytes_total += size
-            record.next_batch_no += 1
-            record.last_ack = {"batch_no": batch_no, "accepted": len(written), "next_seq": written[-1].seq + 1}
+            record.next_batch_no[claims.scope] = expected + 1
+            ack = {"batch_no": batch_no, "accepted": len(written), "next_seq": written[-1].seq + 1}
+            record.last_ack[claims.scope] = ack
             self.repo.save(record)
-            return record.last_ack
+            return ack
 
     @staticmethod
     def _memory_rows(run_id: str, events: list[Any]) -> list[dict[str, Any]]:
@@ -218,6 +220,14 @@ class IngestService:
                 raise Conflict("the manifest is already sealed") from None
             record.manifest_sealed = True
             self.repo.save(record)
+
+    def run_status(self, claims: Claims, run_id: str) -> dict[str, Any]:
+        """For the orchestrator: where the run stands, so it can finalize runs whose worker died."""
+        if claims.scope != "orchestrator":
+            raise WrongScope("only the orchestrator reads run status")
+        record = self._record(run_id)
+        return {"status": record.status, "closed": record.closed, "events": record.event_count,
+                "manifest_sealed": record.manifest_sealed, "next_batch_no": record.next_batch_no["orchestrator"]}
 
     def close_run(self, claims: Claims, run_id: str) -> dict[str, Any]:
         if claims.scope != "orchestrator":

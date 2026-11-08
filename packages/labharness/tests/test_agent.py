@@ -392,3 +392,34 @@ def test_captured_frames_are_handed_to_the_frame_sink(bundle) -> None:  # type: 
     assert [n for n, _ in got] == [0] and got[0][1].startswith(b"\x89PNG")          # step 0 always; no change, k=5
     sha = next(e.data["frame_sha256"] for e in sink.events if e.type == "obs" and e.step == 0)
     assert sha is not None
+
+
+# ---- RunConfig.from_dict: untrusted input ---------------------------------------------------------------
+def test_run_config_roundtrips_through_a_dict() -> None:
+    base = RunConfig("anthropic", "claude-sonnet-5-5", "general@1", MemoryConfig(max_files=3), inject_cap_chars=99,
+                     observation=ObservationConfig(hide_extras=("a", "b"), show_milestones=True),
+                     screenshots=ScreenshotPolicy("every_k", k=3, frame_scale=1), caps=Caps(max_steps=7, max_wall_s=60.0), mode="benchmark")
+    again = RunConfig.from_dict(json.loads(json.dumps(base.to_dict())))
+    assert again == base and again.config_hash == base.config_hash
+    minimal = RunConfig.from_dict({"provider": "anthropic", "model_id": "m", "preset_ref": "none@1", "mode": "demo"})
+    assert minimal.caps == Caps() and minimal.memory == MemoryConfig()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [None, [], "x", {}, {"provider": "a", "model_id": "m", "preset_ref": "none@1"},
+     {"provider": "a", "model_id": "m", "preset_ref": "none@1", "mode": "demo", "extra": 1},
+     {"provider": 1, "model_id": "m", "preset_ref": "none@1", "mode": "demo"},
+     {"provider": "a", "model_id": "m", "preset_ref": "none@1", "mode": "demo", "caps": {"max_steps": 0}},
+     {"provider": "a", "model_id": "m", "preset_ref": "none@1", "mode": "demo", "caps": {"bogus": 1}},
+     {"provider": "a", "model_id": "m", "preset_ref": "none@1", "mode": "demo", "caps": []},
+     {"provider": "a", "model_id": "m", "preset_ref": "none@1", "mode": "demo", "memory": {"max_files": "3"}},
+     {"provider": "a", "model_id": "m", "preset_ref": "none@1", "mode": "demo", "observation": {"hide_extras": [1]}},
+     {"provider": "a", "model_id": "m", "preset_ref": "general@1", "mode": "demo", "memory": {"enabled": False}},
+     {"provider": "a", "model_id": "m", "preset_ref": "none@1", "mode": "ranked"},
+     {"provider": "a", "model_id": "m", "preset_ref": "none@1", "mode": "demo", "screenshots": {"k": 0}},
+     {"provider": "a", "model_id": "m", "preset_ref": "none@1", "mode": "demo", "inject_path": "../x"}],
+)
+def test_run_config_from_dict_rejects_bad_input(bad: object) -> None:
+    with pytest.raises((ValueError, TypeError)):
+        RunConfig.from_dict(bad)

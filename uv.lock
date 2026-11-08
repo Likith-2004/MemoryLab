@@ -8,9 +8,12 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "egressproxy",
     "ingest",
     "labharness",
+    "orchestrator",
     "runlog",
+    "worker",
 ]
 
 [[package]]
@@ -134,6 +137,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
 ]
+
+[[package]]
+name = "egressproxy"
+version = "0.1.0"
+source = { editable = "services/egressproxy" }
 
 [[package]]
 name = "fastapi"
@@ -510,6 +518,41 @@ wheels = [
 ]
 
 [[package]]
+name = "orchestrator"
+version = "0.1.0"
+source = { editable = "services/orchestrator" }
+dependencies = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "ingest" },
+    { name = "labharness" },
+    { name = "runlog" },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "egressproxy" },
+    { name = "worker" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "ingest", editable = "services/ingest" },
+    { name = "labharness", editable = "packages/labharness" },
+    { name = "runlog", editable = "packages/runlog" },
+    { name = "uvicorn", specifier = ">=0.30" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "egressproxy", editable = "services/egressproxy" },
+    { name = "worker", editable = "services/worker" },
+]
+
+[[package]]
 name = "packaging"
 version = "26.3"
 source = { registry = "https://pypi.org/simple" }
@@ -836,3 +879,28 @@ sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cf
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/0c/b54a4fdd7f90a3af8b02ebc9ce6712c2c208b7926a2f7bad95c33ebbe943/uvicorn-0.54.0-py3-none-any.whl", hash = "sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf", size = 87427, upload-time = "2026-09-25T06:52:35.829Z" },
 ]
+
+[[package]]
+name = "worker"
+version = "0.1.0"
+source = { editable = "services/worker" }
+dependencies = [
+    { name = "httpx" },
+    { name = "labharness" },
+    { name = "runlog" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "ingest" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "labharness", editable = "packages/labharness" },
+    { name = "runlog", editable = "packages/runlog" },
+]
+
+[package.metadata.requires-dev]
+dev = [{ name = "ingest", editable = "services/ingest" }]

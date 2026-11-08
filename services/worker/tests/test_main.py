@@ -1,0 +1,134 @@
+import io
+import json
+import os
+import threading
+import time
+from pathlib import Path
+
+import pytest
+from runlog.eventlog import EventLogReader
+
+from conftest import CANARY, GAMES, RUN_CONFIG, Env
+from worker import main as worker_main
+from worker.main import main
+
+
+def run_main(env: Env, stdin: io.StringIO, **kw):  # type: ignore[no-untyped-def]
+    out = io.StringIO()
+    code = main(stdin, out, http_client=env.client, games_dir=GAMES, **kw)
+    lines = [json.loads(line) for line in out.getvalue().splitlines()]
+    return code, lines, out.getvalue()
+
+
+def test_a_full_run_streams_events_frames_and_a_summary(env: Env, capsys: pytest.CaptureFixture[str]) -> None:
+    run_id = env.run()
+    code, lines, raw = run_main(env, env.line(run_id))
+    assert code == 0
+    done = lines[-1]["done"]
+    assert (done["state"], done["reason"], done["steps"]) == ("capped", "steps", 4)
+    assert env.repo.get(run_id).status == "capped" and env.repo.get(run_id).steps == 4
+    events = list(EventLogReader(env.store, run_id).iter_events())
+    assert [e.data["state"] for e in events if e.type == "run.state"] == ["starting", "running", "stopping", "capped"]
+    frames = sorted(p.name for p in (env.store.root / "runs" / run_id / "frames").iterdir())
+    assert frames[0] == "0000000.png" and env.repo.get(run_id).frames == len(frames) >= 1
+    err = capsys.readouterr()
+    assert err.err == "" and err.out == ""                                    # stdout is ours, nothing leaks to the real streams
+    assert CANARY not in raw
+
+
+def test_the_key_in_the_spec_never_reaches_stdout_or_the_log_even_if_the_model_echoes_it(env: Env) -> None:
+    run_id = env.run()
+    script = [{"calls": [["press", {"buttons": ["Right"], "hold_frames": 1}], ["mem_write", {"path": "n", "content": f"key {CANARY}"}]],
+               "text": f"the key is {CANARY}", "tokens": 100}] * 2 + [{"error": True, "message": f"provider said {CANARY}"}]
+    spec_overrides = {"provider": {"name": "fake", "api_key": CANARY, "script": script}}
+    code, lines, raw = run_main(env, env.line(run_id, **spec_overrides))
+    assert code == 0 and lines[-1]["done"]["state"] == "failed" and lines[-1]["done"]["redaction_hits"] >= 3
+    blob = b"".join(p.read_bytes() for p in env.store.root.rglob("*") if p.is_file()).decode("latin-1")
+    assert CANARY not in blob and CANARY not in raw and CANARY not in repr(env.repo.runs) + repr(env.repo.memory_rows)
+
+
+def test_heartbeats_flow_while_the_run_is_busy(env: Env) -> None:
+    run_id = env.run()
+    slow = [{"calls": [["wait", {"frames": 1}]], "tokens": 10}] * 3
+    original = worker_main.make_provider
+
+    def slow_provider(job, proxy):  # type: ignore[no-untyped-def]
+        provider = original(job, proxy)
+        real = provider.step
+
+        def step(request):  # type: ignore[no-untyped-def]
+            time.sleep(0.25)
+            return real(request)
+
+        provider.step = step
+        return provider
+
+    worker_main.make_provider = slow_provider  # type: ignore[assignment]
+    try:
+        code, lines, _ = run_main(env, env.line(run_id, provider={"name": "fake", "api_key": CANARY, "script": slow},
+                                                run_config={**RUN_CONFIG, "caps": {"max_steps": 3}}))
+    finally:
+        worker_main.make_provider = original  # type: ignore[assignment]
+    beats = [x["hb"] for x in lines if "hb" in x]
+    assert code == 0 and len(beats) >= 3 and beats == sorted(beats) and "done" in lines[-1]
+
+
+def test_a_stop_command_on_stdin_ends_the_run_gracefully(env: Env) -> None:
+    run_id = env.run()
+    many = [{"calls": [["wait", {"frames": 1}]], "tokens": 10}] * 50
+    stdin = env.line(run_id, '{"cmd":"stop"}\n', provider={"name": "fake", "script": many},
+                     run_config={**RUN_CONFIG, "caps": {"max_steps": 50}})
+    code, lines, _ = run_main(env, stdin)
+    done = lines[-1]["done"]
+    assert code == 0 and (done["state"], done["reason"]) == ("completed", "user_stop") and done["steps"] < 50
+
+
+def test_junk_on_the_control_channel_is_ignored(env: Env) -> None:
+    run_id = env.run()
+    code, lines, raw = run_main(env, env.line(run_id, 'not json\n[]\n{"cmd":"explode"}\n' + "x" * 10_000 + "\n"))
+    assert code == 0 and lines[-1]["done"]["state"] == "capped" and "explode" not in raw
+
+
+@pytest.mark.parametrize("spec_text", ["", "{", '{"v":1}', '{"v":2}', "[]"])
+def test_a_bad_spec_exits_2_with_only_a_type_name(env: Env, spec_text: str) -> None:
+    code, lines, raw = run_main(env, io.StringIO(spec_text + "\n"))
+    assert code == 2 and lines == [{"fatal": "SpecError"}]
+
+
+def test_a_bad_spec_does_not_echo_the_key(env: Env) -> None:
+    run_id = env.run()
+    code, lines, raw = run_main(env, env.line(run_id, game="../etc"))
+    assert code == 2 and CANARY not in raw
+
+
+def test_ingest_refusal_is_exit_3(env: Env) -> None:
+    run_id = env.run()
+    bad_token = env.spec(run_id)["ingest"]["token"][:-3] + "AAA"
+    code, lines, raw = run_main(env, env.line(run_id, ingest={"url": "http://ingest.test:8000", "token": bad_token}))
+    assert code == 3 and lines[-1] == {"fatal": "IngestRejected"}
+
+
+def test_unexpected_errors_report_only_the_type_never_the_message(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = env.run()
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError(f"something with {CANARY}")
+
+    monkeypatch.setattr(worker_main, "run_job", boom)
+    code, lines, raw = run_main(env, env.line(run_id))
+    assert code == 1 and lines == [{"fatal": "RuntimeError"}] and CANARY not in raw
+
+
+def test_the_fake_provider_is_refused_without_the_environment_flag(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MEMORYLAB_ALLOW_FAKE_PROVIDER")
+    code, lines, _ = run_main(env, env.line(env.run()))
+    assert code == 2 and lines == [{"fatal": "SpecError"}]
+
+
+def test_the_worker_writes_nothing_to_its_working_directory(env: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    run_main(env, env.line(env.run()))
+    assert os.listdir(cwd) == []
+    assert threading.active_count() >= 1
