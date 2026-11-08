@@ -33,6 +33,7 @@ export default defineConfig({
       url: `${API}/api/v1/health`,
       timeout: 90_000,
       reuseExistingServer: false,
+      gracefulShutdown: { signal: "SIGTERM", timeout: 60_000 },   // let the harness delete what it created
       env: { E2E_WEB_ORIGIN: WEB, E2E_CANARY_KEY: CANARY, E2E_API_PORT: "8010", E2E_STORE: "/tmp/memorylab-e2e-store" },
     },
     {

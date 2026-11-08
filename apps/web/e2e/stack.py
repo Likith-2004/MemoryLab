@@ -267,6 +267,7 @@ def cleanup() -> None:
 
 
 def main() -> None:
+    cleanup()                      # leftovers of an earlier run that was killed
     seeded = seed()
     Path(os.environ.get("E2E_SEED_FILE", "/tmp/memorylab-e2e-seed.json")).write_text(json.dumps(seeded))
     app, _ = build()
