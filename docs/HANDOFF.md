@@ -10,7 +10,7 @@ Current state, updated at every milestone.
 - Python is pinned to 3.14 (stdlib zstd). Packages: `packages/labharness`, `packages/runlog`, `services/ingest`.
 - M5: `services/egressproxy`, `services/worker`, `services/orchestrator`, `infra/docker` (images `memorylab-worker:dev`, `memorylab-egress:dev`; build with `infra/docker/build.sh`). Docker integration tests run when the images exist (they only touch `memorylab`-labelled objects).
 - M6 (branch `m6-api`): local Supabase in `infra/supabase`, `services/api` (JWT, RLS, runs, admin, uniform signup), `ingest.pg_repository`. See CHANGELOG for what is built and what is not.
-- Next: finish M6 (remaining routes: `DELETE /me`, stream tickets + WebSocket, fork, frames, export, experiments, admin reports/unverify, queued-row reaper) and resolve DECISIONS M6-2 / M6-7 with the owner; then M7.
+- M6 is feature complete and awaiting the final review and the owner's tag decision (not tagged). Fork is built but disabled: the worker cannot start from a checkpoint (BLOCKED.md B-6); frames/export signing is a local stand-in (B-2). Next: M7.
 
 ## How to run
 ```bash
@@ -20,7 +20,17 @@ make gate          # needs the stack above; MEMORYLAB_REQUIRE_DB=1 is set by the
 supabase stop --workdir infra
 ```
 `supabase db reset --workdir infra` re-applies the migrations (needed after adding one).
-Run the API: `MEMORYLAB_JWKS_URL=... MEMORYLAB_JWT_ISSUER=... MEMORYLAB_ORCHESTRATOR_TOKEN=... MEMORYLAB_OBJECT_STORE=... uvicorn --factory api.main:build`. `MEMORYLAB_JWT_ISSUER` is required. `MEMORYLAB_DB_URL` must be the `memorylab_api` login role (never `postgres`; migration 5 creates it, the password is set outside the repo). `MEMORYLAB_ACCOUNTS_URL` and `MEMORYLAB_ACCOUNTS_TOKEN` (>= 32 bytes) point at the accounts service (`uvicorn --factory accounts.main:build`, which needs `MEMORYLAB_SERVICE_DB_URL`, `MEMORYLAB_ORCHESTRATOR_URL/TOKEN`, `MEMORYLAB_AUTH_URL`, `MEMORYLAB_AUTH_SERVICE_KEY`, `MEMORYLAB_ACCOUNTS_TOKEN`); the reaper is `python -m orchestrator.reaper` with `MEMORYLAB_SERVICE_DB_URL`, `MEMORYLAB_INGEST_URL`, `MEMORYLAB_TOKEN_SECRET` (the orchestrator's) and `MEMORYLAB_ORCHESTRATOR_URL/TOKEN`. For local frames/export set `MEMORYLAB_BLOB_SIGNING_SECRET` (>= 32 bytes) and `MEMORYLAB_PUBLIC_API_URL`. `MEMORYLAB_ALLOWED_ORIGINS` (comma-separated, exact match) lists the web origins allowed to open a WebSocket; start uvicorn with `--ws-max-size 1024`. Behind a gateway set `MEMORYLAB_TRUSTED_PROXY_HOPS` to the number of proxies, or every caller shares one IP.
+
+### Processes (M6)
+All values come from the environment; secrets are never defaults. Tokens are >= 32 bytes.
+
+| Process | Command | Environment |
+|---|---|---|
+| API | `uvicorn --factory api.main:build --ws-max-size 1024` (keep access logs off for `/ws/`: the ticket is in the URL) | `MEMORYLAB_JWKS_URL`, `MEMORYLAB_JWT_ISSUER` (required), `MEMORYLAB_DB_URL` (the `memorylab_api` login role, never `postgres`), `MEMORYLAB_AUTH_URL`, `MEMORYLAB_AUTH_APIKEY`, `MEMORYLAB_ORCHESTRATOR_URL`/`_TOKEN`, `MEMORYLAB_ACCOUNTS_URL`/`_TOKEN`, `MEMORYLAB_OBJECT_STORE`, `MEMORYLAB_ALLOWED_ORIGINS` (comma list; empty = no WebSocket), `MEMORYLAB_TRUSTED_PROXY_HOPS` (proxies in front, else every caller shares one IP), `MEMORYLAB_FORK_ENABLED=1` only once B-6 is built, `MEMORYLAB_BLOB_SIGNING_SECRET` + `MEMORYLAB_PUBLIC_API_URL` (local frames/export only) |
+| Accounts service | `uvicorn --factory accounts.main:build` (internal network only) | `MEMORYLAB_SERVICE_DB_URL` (service-role access), `MEMORYLAB_ORCHESTRATOR_URL`/`_TOKEN`, `MEMORYLAB_AUTH_URL`, `MEMORYLAB_AUTH_SERVICE_KEY`, `MEMORYLAB_ACCOUNTS_TOKEN` |
+| Reaper | `python -m orchestrator.reaper` | `MEMORYLAB_SERVICE_DB_URL`, `MEMORYLAB_INGEST_URL`, `MEMORYLAB_TOKEN_SECRET` (the orchestrator's), `MEMORYLAB_ORCHESTRATOR_URL`/`_TOKEN`, optional `MEMORYLAB_REAPER_PERIOD_S` (60) |
+
+Migrations are `infra/supabase/migrations/*` (16 so far); the local password for `memorylab_api` is set by `infra/supabase/seed.sql` (never in production). `api_private` must never be added to PostgREST's `schemas`.
 
 ## Environment on this machine
 - rgbds 1.0.1 at `~/.local/opt/rgbds-1.0.1` (build tool for fixture ROMs).
