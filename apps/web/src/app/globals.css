@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+/* Our own tokens (WEB_DESIGN.md). One accent, and it means "memory". No gradients, no glass, no shadows that blur. */
+@theme {
+  --color-surface: #f6f6f4;
+  --color-panel: #ffffff;
+  --color-ink: #16181b;
+  --color-muted: #55595f;
+  --color-line: #cfd1d4;
+  --color-memory: #0b6bcb;
+  --color-memory-soft: #e3effb;
+  --color-ok: #1a6b32;
+  --color-warn: #8a5300;
+  --color-bad: #b3261e;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-surface: #121315;
+    --color-panel: #1a1c1f;
+    --color-ink: #e8e8e6;
+    --color-muted: #a3a7ad;
+    --color-line: #3a3d42;
+    --color-memory: #5aa2f0;
+    --color-memory-soft: #172a40;
+    --color-ok: #5ec27a;
+    --color-warn: #e0a64a;
+    --color-bad: #f08a82;
+  }
+}
+
+html { background: var(--color-surface); color: var(--color-ink); font-family: var(--font-sans); font-size: 14px; }
+body { margin: 0; min-height: 100vh; }
+a { color: var(--color-memory); text-underline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--color-memory); outline-offset: 2px; }
+.mono { font-family: var(--font-mono); font-size: 13px; }
+.pixel { image-rendering: pixelated; image-rendering: crisp-edges; }
+
+/* Only the newest log row animates, and not at all when the user asks for less motion. */
+@keyframes fresh { from { background: var(--color-memory-soft); } to { background: transparent; } }
+.row-new { animation: fresh 1.2s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .row-new { animation: none; }
+  * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+}

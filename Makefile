@@ -2,7 +2,7 @@
 BIN := $(CURDIR)/.venv/bin
 PKGS := packages/labharness packages/runlog services/ingest services/egressproxy services/worker services/orchestrator services/api services/accounts packages/cli
 
-.PHONY: sync test lint secrets gate
+.PHONY: sync test lint secrets gate web
 sync:
 	uv sync --all-packages --all-groups
 
@@ -17,5 +17,9 @@ secrets:
 	gitleaks git --no-banner
 	gitleaks dir --no-banner .
 
+# Web: lint (incl. the no-raw-html rule), types, unit tests, production build, then the built-bundle secret scan.
+web:
+	cd apps/web && npm run lint && npm run typecheck && npm test && MEMORYLAB_PUBLISHABLE_KEY=build-placeholder npm run build && npm run scan
+
 gate: export MEMORYLAB_REQUIRE_DB=1
-gate: lint test secrets
+gate: lint test web secrets
