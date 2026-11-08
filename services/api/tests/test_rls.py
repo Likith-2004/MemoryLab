@@ -63,38 +63,110 @@ def test_soft_deleted_runs_are_hidden_from_everyone_but_owner_and_admin(db: Db) 
     assert len(db.q("select 1 from public.runs where id = %s", run)) == 1
 
 
-def test_a_user_can_create_a_queued_run_request_for_themselves_only(db: Db) -> None:
-    a, b = db.new_user(), db.new_user()
+CREATE = ("select api_private.create_run_request(%s::jsonb, %s, 'demo', 'private', 5, 100, 30, null) as id")
+JSON = "{}"
+
+
+def test_direct_inserts_are_denied_so_the_function_is_the_only_way_to_create_a_run(db: Db) -> None:
+    a = db.new_user()
     db.as_(a)
-    cfg = db.q("insert into public.run_configs (owner_id, config_json, config_hash, mode) "
-               "values (%s, '{}', %s, 'demo') returning id", a, "c" * 64)[0]["id"]
-    db.x("insert into public.runs (owner_id, config_id, cap_steps, cap_tokens, cap_wall_s) "
-         "values (%s, %s, 5, 100, 30)", a, cfg)
-    with pytest.raises(psycopg.errors.InsufficientPrivilege):             # not as someone else
+    for stmt in (("insert into public.run_configs (owner_id, config_json, config_hash, mode) "
+                  f"values ('{a}', '{{}}', '{'c' * 64}', 'demo')"),
+                 ("insert into public.runs (owner_id, config_id, cap_steps, cap_tokens, cap_wall_s) "
+                  f"select '{a}', gen_random_uuid(), 5, 100, 30"),
+                 f"insert into public.reports (reporter_id, run_id, reason) select '{a}', gen_random_uuid(), 'x'",
+                 f"insert into public.experiments (owner_id, title, variable) values ('{a}', 't', 'v')"):
         db.x("savepoint s")
-        db.x("insert into public.run_configs (owner_id, config_json, config_hash, mode) "
-             "values (%s, '{}', %s, 'demo')", b, "c" * 64)
-    db.x("rollback to savepoint s")
-    with pytest.raises(psycopg.errors.InsufficientPrivilege):             # nor a run claiming progress
-        db.x("savepoint s2")
-        db.x("insert into public.runs (owner_id, config_id, cap_steps, cap_tokens, cap_wall_s, status) "
-             "values (%s, %s, 5, 100, 30, 'completed')", a, cfg)
-    db.x("rollback to savepoint s2")
-    with pytest.raises(psycopg.errors.InsufficientPrivilege):
-        db.x("savepoint s3")
-        db.x("insert into public.runs (owner_id, config_id, cap_steps, cap_tokens, cap_wall_s, steps) "
-             "values (%s, %s, 5, 100, 30, 99)", a, cfg)
-    db.x("rollback to savepoint s3")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            db.x(stmt)
+        db.x("rollback to savepoint s")
+    run = db.q(CREATE, JSON, "c" * 64)[0]["id"]
+    row = db.q("select owner_id, status, visibility, cap_steps from public.runs where id = %s", run)[0]
+    assert (str(row["owner_id"]), row["status"], row["visibility"], row["cap_steps"]) == (a, "queued", "private", 5)
 
 
-def test_the_run_request_cannot_be_created_for_another_owner(db: Db) -> None:
+@pytest.mark.parametrize("table", ["run_configs", "runs", "reports", "experiments"])
+def test_no_insert_privilege_on_creation_tables_for_user_roles(db: Db, table: str) -> None:
+    """Mutation guard: re-granting INSERT (table or column level) to a user role fails here."""
+    for role in ("anon", "authenticated"):
+        assert db.q("select has_table_privilege(%s, %s, 'insert') p", role, f"public.{table}")[0]["p"] is False
+        cols = db.q("select column_name from information_schema.columns where table_schema = 'public' "
+                    "and table_name = %s", table)
+        assert [c["column_name"] for c in cols
+                if db.q("select has_column_privilege(%s, %s, %s, 'insert') p", role, f"public.{table}",
+                        c["column_name"])[0]["p"]] == []
+    assert db.q("select has_table_privilege('authenticated', 'public.experiments', 'update') p")[0]["p"] is False
+    assert [c["column_name"] for c in db.q("select column_name from information_schema.columns where "
+            "table_schema = 'public' and table_name = 'experiments'")
+            if db.q("select has_column_privilege('authenticated', 'public.experiments', %s, 'update') p",
+                    c["column_name"])[0]["p"]] == []
+
+
+def test_the_create_function_takes_no_owner_and_needs_a_signed_in_caller(db: Db) -> None:
     a, b = db.new_user(), db.new_user()
     db.as_(a)
+    run = db.q(CREATE, JSON, "c" * 64)[0]["id"]
+    db.as_(b)
+    assert db.q("select 1 from public.runs where id = %s", run) == []     # a's private run is not b's
+    db.as_(None)
     db.x("savepoint s")
-    with pytest.raises(psycopg.errors.InsufficientPrivilege, match="row-level security"):
-        db.x("insert into public.runs (owner_id, config_id, cap_steps, cap_tokens, cap_wall_s) "
-             "select %s, gen_random_uuid(), 5, 100, 30", b)
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        db.q(CREATE, JSON, "c" * 64)
     db.x("rollback to savepoint s")
+    db.conn.execute("reset role")                                        # a role with no sub claim has no uid
+    db.conn.execute("select set_config('request.jwt.claims', '{\"role\": \"authenticated\"}', true)")
+    db.conn.execute("set local role authenticated")
+    db.x("savepoint s2")
+    with pytest.raises(psycopg.errors.RaiseException, match="not_authenticated"):
+        db.q(CREATE, JSON, "c" * 64)
+    db.x("rollback to savepoint s2")
+
+
+def test_create_function_enforces_caps_and_one_active_run(db: Db) -> None:
+    a, b = db.new_user(), db.new_user()
+    db.as_(a)
+    for caps in ((0, 100, 30), (100001, 100, 30), (5, 0, 30), (5, 1_000_000_001, 30), (5, 100, 0), (5, 100, 86401)):
+        db.x("savepoint s")
+        with pytest.raises(psycopg.errors.RaiseException, match="caps_out_of_range"):
+            db.q("select api_private.create_run_request('{}', %s, 'demo', 'private', %s, %s, %s, null)",
+                 "c" * 64, *caps)
+        db.x("rollback to savepoint s")
+    db.q("select api_private.create_run_request('{}', %s, 'demo', 'private', 100000, 1000000000, 86400, null)",
+         "c" * 64)                                                         # the maxima themselves are fine
+    db.x("savepoint s")
+    with pytest.raises(psycopg.errors.RaiseException, match="active_run_exists"):
+        db.q(CREATE, JSON, "c" * 64)
+    db.x("rollback to savepoint s")
+    db.as_(b)
+    db.q(CREATE, JSON, "c" * 64)                                           # another user is not blocked
+    db.as_service()
+    db.x("update public.runs set status = 'completed' where owner_id = %s", a)
+    db.as_(a)
+    db.q(CREATE, JSON, "c" * 64)                                           # a finished run frees the slot
+
+
+def test_the_run_table_has_check_constraints_for_the_cap_maxima(db: Db) -> None:
+    a = db.new_user()
+    for col, val in (("cap_steps", 100001), ("cap_tokens", 1_000_000_001), ("cap_wall_s", 86401)):
+        db.x("savepoint s")
+        with pytest.raises(psycopg.errors.CheckViolation):
+            db.make_run(a, **{col: val})
+        db.x("rollback to savepoint s")
+        db.conn.execute("reset role")
+
+
+def test_abandon_moves_only_the_callers_own_queued_run_to_failed(db: Db) -> None:
+    a, b = db.new_user(), db.new_user()
+    db.as_(a)
+    run = db.q(CREATE, JSON, "c" * 64)[0]["id"]
+    db.as_(b)
+    assert db.q("select api_private.abandon_run_request(%s) ok", run)[0]["ok"] is False
+    db.as_(a)
+    assert db.q("select api_private.abandon_run_request(%s) ok", run)[0]["ok"] is True
+    assert db.q("select api_private.abandon_run_request(%s) ok", run)[0]["ok"] is False     # not queued any more
+    row = db.q("select status, end_reason, ended_at is not null done from public.runs where id = %s", run)[0]
+    assert row == {"status": "failed", "end_reason": "submit_refused", "done": True}
+    db.q(CREATE, JSON, "c" * 64)                                                          # slot is free again
 
 
 def test_owner_edits_title_and_visibility_but_not_status_counters_or_owner(db: Db) -> None:
@@ -221,15 +293,12 @@ def test_reports_reporter_reads_own_admin_all_and_only_visible_runs_can_be_repor
     owner, a, b, admin = db.new_user(), db.new_user(), db.new_user(), db.new_user("admin")
     pub, priv = db.make_run(owner, "public"), db.make_run(owner, "private")
     db.as_(a)
-    db.x("insert into public.reports (reporter_id, run_id, reason) values (%s, %s, 'spam')", a, pub)
+    rid = db.q("select api_private.file_report(%s, 'spam') id", pub)[0]["id"]
+    assert db.q("select api_private.file_report(%s, 'again') id", pub)[0]["id"] == rid     # idempotent while open
     db.x("savepoint s")
-    with pytest.raises(psycopg.errors.InsufficientPrivilege, match="row-level security"):
-        db.x("insert into public.reports (reporter_id, run_id, reason) values (%s, %s, 'probe')", a, priv)
+    with pytest.raises(psycopg.errors.RaiseException, match="run_not_found"):
+        db.q("select api_private.file_report(%s, 'probe')", priv)
     db.x("rollback to savepoint s")
-    db.x("savepoint s2")
-    with pytest.raises(psycopg.errors.InsufficientPrivilege):             # no spoofed reporter, no status writes
-        db.x("insert into public.reports (reporter_id, run_id, reason) values (%s, %s, 'x')", b, pub)
-    db.x("rollback to savepoint s2")
     assert len(db.q("select 1 from public.reports")) == 1
     db.as_(b)
     assert db.q("select 1 from public.reports") == []
@@ -237,17 +306,44 @@ def test_reports_reporter_reads_own_admin_all_and_only_visible_runs_can_be_repor
     assert len(db.q("select 1 from public.reports")) == 1
 
 
+def test_file_report_refuses_self_reports_and_limits_reporters_to_ten_an_hour(db: Db) -> None:
+    owner, a = db.new_user(), db.new_user()
+    mine = db.make_run(owner, "public")
+    db.as_(owner)
+    db.x("savepoint s")
+    with pytest.raises(psycopg.errors.RaiseException, match="cannot_report_own_run"):
+        db.q("select api_private.file_report(%s, 'me')", mine)
+    db.x("rollback to savepoint s")
+    runs = [db.make_run(owner, "public") for _ in range(11)]
+    db.as_(a)
+    for r in runs[:10]:
+        db.q("select api_private.file_report(%s, 'x')", r)
+    db.q("select api_private.file_report(%s, 'dup')", runs[0])                 # a duplicate is not a new report
+    db.x("savepoint s2")
+    with pytest.raises(psycopg.errors.RaiseException, match="report_rate_limited"):
+        db.q("select api_private.file_report(%s, 'x')", runs[10])
+    db.x("rollback to savepoint s2")
+    for reason in ("", "x" * 1001):
+        db.x("savepoint s3")
+        with pytest.raises(psycopg.errors.RaiseException, match="reason_invalid"):
+            db.q("select api_private.file_report(%s, %s)", runs[10], reason)
+        db.x("rollback to savepoint s3")
+
+
 def test_experiments_follow_owner_and_visibility(db: Db) -> None:
     a, b = db.new_user(), db.new_user()
-    db.as_(a)
+    db.as_service()
     for vis in ("private", "unlisted", "public"):
         db.x("insert into public.experiments (owner_id, title, variable, visibility) values (%s, %s, 'preset', %s)",
              a, vis, vis)
     db.as_(b)
     assert {r["title"] for r in db.q("select title from public.experiments")} == {"unlisted", "public"}
-    db.x("update public.experiments set title = 'pwned'")                  # RLS: no rows match
     db.as_(a)
-    assert "pwned" not in {r["title"] for r in db.q("select title from public.experiments")}
+    assert {r["title"] for r in db.q("select title from public.experiments")} == {"private", "unlisted", "public"}
+    db.x("savepoint s")
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):             # no direct writes by anyone, owner included
+        db.x("update public.experiments set title = 'pwned'")
+    db.x("rollback to savepoint s")
 
 
 def test_service_role_can_write_everything_users_cannot(db: Db) -> None:

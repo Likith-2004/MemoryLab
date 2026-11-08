@@ -88,6 +88,9 @@ class AdminKillIn(BaseModel):
     reason: str = Field(min_length=1, max_length=200)
 
 
+_REFUNDED_REFUSALS = ("capacity_full", "breaker_open")
+
+
 class NotFound(Exception):
     pass
 
@@ -319,20 +322,46 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
             raise ApiError(422, "validation_failed", "unknown game")
         if limiter.count(("keyfail", user.id), 3600) >= settings.key_failures_per_user_per_hour:
             raise ApiError(429, "rate_limited", "Run creation is locked for an hour", {"retry-after": "3600"})
-        if not limiter.allow(("create", user.id), settings.run_create_per_user_per_hour, 3600) or \
-                not limiter.allow(("create-ip", ip), settings.run_create_per_ip_per_hour, 3600):
+        if _has_active_run(conn, user):                           # cheap early answer; the DB function is the authority
+            raise _active_run()
+        create_keys = (("create", user.id), ("create-ip", ip))
+        if not limiter.allow_all([(create_keys[0], settings.run_create_per_user_per_hour, 3600),
+                                  (create_keys[1], settings.run_create_per_ip_per_hour, 3600)]):
             raise ApiError(429, "rate_limited", "Too many runs", {"retry-after": "3600"})
-        if not key_validator.validate(config.provider, body.api_key.get_secret_value()):
-            limiter.record(("keyfail", user.id), 3600)
-            raise ApiError(422, "key_rejected", "The key was not accepted")   # one generic answer, always
-        run_id = _insert_run(conn, user, body, config, doc)
-        conn.commit()     # the run row must be visible to ingest before the orchestrator mints a token
-        Database.apply_identity(conn, user)
-        orchestrator.submit({
-            "run_id": run_id, "user_id": user.id, "ip_hash": ip, "game": body.game, "run_config": config.to_dict(),
-            "preset_text": preset_text,
-            "provider": {"name": config.provider, "api_key": body.api_key.get_secret_value()}})
-        return {"run_id": run_id, "status": "queued"}
+        refund = True                                             # every exit below refunds unless the run was accepted
+        try:
+            if not key_validator.validate(config.provider, body.api_key.get_secret_value()):
+                refund = False
+                limiter.record(("keyfail", user.id), 3600)
+                raise ApiError(422, "key_rejected", "The key was not accepted")   # one generic answer, always
+            try:
+                run_id = _create_run_request(conn, body, config, doc)
+            except RaiseException as exc:
+                if "active_run_exists" in str(exc):
+                    raise _active_run() from None
+                if "caps_out_of_range" in str(exc):
+                    raise ApiError(422, "validation_failed", "caps out of range") from None
+                raise
+            conn.commit()     # the run row must be visible to ingest before the orchestrator mints a token
+            Database.apply_identity(conn, user)
+            refund = False
+            try:
+                orchestrator.submit({
+                    "run_id": run_id, "user_id": user.id, "ip_hash": ip, "game": body.game,
+                    "run_config": config.to_dict(), "preset_text": preset_text,
+                    "provider": {"name": config.provider, "api_key": body.api_key.get_secret_value()}})
+            except Exception as exc:
+                # a refused submit must not leave a queued row that blocks the user until the reaper runs
+                conn.execute("select api_private.abandon_run_request(%s)", (run_id,))
+                conn.commit()
+                Database.apply_identity(conn, user)
+                refund = isinstance(exc, UpstreamError) and exc.code in _REFUNDED_REFUSALS
+                raise
+            return {"run_id": run_id, "status": "queued"}
+        finally:
+            if refund:
+                for key in create_keys:
+                    limiter.refund(key)
 
     @app.get(f"{API}/runs", dependencies=[Guard])
     def list_runs(user: Authed, conn: Sess, limit: Annotated[int, Query(ge=1, le=100)] = 25,
@@ -429,8 +458,18 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
 
     @app.post(API + "/runs/{run_id}/report", status_code=202)
     def report(body: ReportIn, run: Run, user: Authed, conn: Sess) -> dict[str, str]:
-        conn.execute("insert into public.reports (reporter_id, run_id, reason) values (%s, %s, %s)",
-                     (user.id, run["id"], body.reason))
+        if run["owner_id"] == user.id:
+            raise ApiError(422, "validation_failed", "you cannot report your own run")
+        try:
+            conn.execute("select api_private.file_report(%s, %s)", (run["id"], body.reason))
+        except RaiseException as exc:
+            if "report_rate_limited" in str(exc):
+                raise ApiError(429, "rate_limited", "Too many reports", {"retry-after": "3600"}) from None
+            if "run_not_found" in str(exc):
+                raise NotFound from None
+            if "cannot_report_own_run" in str(exc):
+                raise ApiError(422, "validation_failed", "you cannot report your own run") from None
+            raise
         return {"status": "received"}
 
     # ------------------------------------------------------------ leaderboard
@@ -496,16 +535,23 @@ def _memory_version(conn: Conn, run_id: str, path: str, version: int | None) -> 
                         "and version = %s", (run_id, path, version)).fetchone()
 
 
-def _insert_run(conn: Conn, user: User, body: CreateRunIn, config: RunConfig, doc: dict[str, Any]) -> str:
+def _active_run() -> ApiError:
+    return ApiError(409, "rate_limited", "You already have an active run", {"retry-after": "60"})
+
+
+def _has_active_run(conn: Conn, user: User) -> bool:
+    return conn.execute("select 1 from public.runs where owner_id = %s and status = any(%s) limit 1",
+                        (user.id, list(_ACTIVE))).fetchone() is not None
+
+
+def _create_run_request(conn: Conn, body: CreateRunIn, config: RunConfig, doc: dict[str, Any]) -> str:
+    """The only write path for a new run: the owner is auth.uid() inside the function, never a parameter."""
     from psycopg.types.json import Jsonb
-    cfg_id = conn.execute(
-        "insert into public.run_configs (owner_id, config_json, config_hash, mode) values (%s, %s, %s, %s) "
-        "returning id", (user.id, Jsonb(doc), config.config_hash, config.mode)).fetchone()["id"]  # type: ignore[index]
     caps = config.caps
     row = conn.execute(
-        "insert into public.runs (owner_id, config_id, visibility, cap_steps, cap_tokens, cap_wall_s) "
-        "values (%s, %s, %s, %s, %s, %s) returning id",
-        (user.id, cfg_id, body.visibility, caps.max_steps, caps.max_tokens, int(caps.max_wall_s))).fetchone()
+        "select api_private.create_run_request(%s, %s, %s, %s, %s, %s, %s, null) as id",
+        (Jsonb(doc), config.config_hash, config.mode, body.visibility, caps.max_steps, caps.max_tokens,
+         int(caps.max_wall_s))).fetchone()
     return str(row["id"])  # type: ignore[index]
 
 

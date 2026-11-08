@@ -35,3 +35,19 @@ class RateLimiter:
     def record(self, key: Hashable, window_s: float) -> None:
         with self._lock:
             self._prune(key, window_s).append(self._clock())
+
+    def allow_all(self, checks: list[tuple[Hashable, int, float]]) -> bool:
+        """Count a hit on every key, or on none: a refusal by one limit must not use up another's quota."""
+        with self._lock:
+            if any(len(self._prune(key, window)) >= limit for key, limit, window in checks):
+                return False
+            for key, _, _ in checks:
+                self._hits[key].append(self._clock())
+            return True
+
+    def refund(self, key: Hashable) -> None:
+        """Take back the most recent hit (a create that was refused downstream and never ran)."""
+        with self._lock:
+            hits = self._hits.get(key)
+            if hits:
+                hits.pop()

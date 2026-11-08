@@ -114,12 +114,22 @@ def test_a_rejected_key_gets_one_generic_answer_then_a_lockout(env: Env) -> None
     assert env.orch.submitted == []
 
 
+def finish(env: Env, uid: str) -> None:
+    env.admin.execute("update public.runs set status = 'completed' where owner_id = %s", (uid,))
+
+
 def test_run_creation_is_rate_limited_per_user_and_per_ip(env: Env) -> None:
     uid, game = env.user(), env.game()
-    codes = [env.client.post("/api/v1/runs", json=body(env, game), headers=bearer(uid)).status_code for _ in range(6)]
+    codes = []
+    for _ in range(6):
+        codes.append(env.client.post("/api/v1/runs", json=body(env, game), headers=bearer(uid)).status_code)
+        finish(env, uid)                                                    # one active run at a time
     assert codes == [202] * 5 + [429]
     other = env.user()                                                      # same IP, different user: IP limit is 10/h
-    codes = [env.client.post("/api/v1/runs", json=body(env, game), headers=bearer(other)).status_code for _ in range(6)]
+    codes = []
+    for _ in range(6):
+        codes.append(env.client.post("/api/v1/runs", json=body(env, game), headers=bearer(other)).status_code)
+        finish(env, other)
     assert codes == [202] * 5 + [429]
 
 
