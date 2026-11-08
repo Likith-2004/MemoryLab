@@ -40,15 +40,31 @@ export function clientAddress(request: NextRequest, hops = trustedHops()): strin
   return entry && /^[0-9a-fA-F:.]{2,45}$/.test(entry) ? entry : null;
 }
 
-const hits = new Map<string, number[]>();
-/** A small in-process limiter for the login route (GoTrue has its own; this keeps one address from hammering it through us). */
+interface Entry { times: number[]; windowMs: number }
+const hits = new Map<string, Entry>();
+const MAX_KEYS = 10_000;
+
+/** A small in-process sliding-window limiter. A key is dropped once its window is empty (swept every 256 calls), and the map is capped at
+ *  MAX_KEYS with the least recently used key evicted, so a stream of distinct addresses or emails cannot grow it without bound. */
 export function limited(key: string, limit: number, windowS: number, now = Date.now()): boolean {
-  const recent = (hits.get(key) ?? []).filter((t) => now - t < windowS * 1000);
-  if (recent.length >= limit) {
-    hits.set(key, recent);
-    return true;
-  }
-  recent.push(now);
-  hits.set(key, recent);
-  return false;
+  const windowMs = windowS * 1000;
+  const recent = (hits.get(key)?.times ?? []).filter((t) => now - t < windowMs);
+  hits.delete(key); // re-inserted below: Map order is insertion order, so the first key is the least recently used
+  const refused = recent.length >= limit;
+  if (!refused) recent.push(now);
+  hits.set(key, { times: recent, windowMs });
+  sweepCounter = (sweepCounter + 1) % 256;
+  if (sweepCounter === 0) for (const [k, e] of hits) if (e.times.every((t) => now - t >= e.windowMs)) hits.delete(k);
+  while (hits.size > MAX_KEYS) hits.delete(hits.keys().next().value as string);
+  return refused;
+}
+let sweepCounter = 0;
+
+export function limiterSize(): number {
+  return hits.size;
+}
+
+/** Drops every key whose window has passed (also used by tests). */
+export function sweepLimiter(now = Date.now()): void {
+  for (const [k, e] of hits) if (e.times.every((t) => now - t >= e.windowMs)) hits.delete(k);
 }

@@ -50,12 +50,13 @@ def supabase_env() -> dict[str, str]:
 
 
 ENV = supabase_env()
-DB_URL = "postgresql://postgres:postgres@127.0.0.1:54322/postgres"
-API_DB_URL = "postgresql://memorylab_api:memorylab-api-local@127.0.0.1:54322/postgres"
+DB_URL = os.environ.get("MEMORYLAB_DB_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres")
+API_DB_URL = os.environ.get("MEMORYLAB_API_DB_URL", "postgresql://memorylab_api:memorylab-api-local@127.0.0.1:54322/postgres")
+RUN_DIR = Path(os.environ.get("E2E_DIR") or __import__("tempfile").mkdtemp(prefix="memorylab-e2e-"))
 SECRET = {"apikey": ENV["SECRET_KEY"], "authorization": "Bearer " + ENV["SECRET_KEY"]}
 AUTH = ENV["API_URL"] + "/auth/v1"
 admin = psycopg.connect(DB_URL, row_factory=dict_row, autocommit=True)
-store = LocalObjectStore(os.environ.get("E2E_STORE", "/tmp/memorylab-e2e-store"))
+store = LocalObjectStore(RUN_DIR / "store")
 created_users: list[str] = []
 
 
@@ -269,7 +270,7 @@ def cleanup() -> None:
 def main() -> None:
     cleanup()                      # leftovers of an earlier run that was killed
     seeded = seed()
-    Path(os.environ.get("E2E_SEED_FILE", "/tmp/memorylab-e2e-seed.json")).write_text(json.dumps(seeded))
+    (RUN_DIR / "seed.json").write_text(json.dumps(seeded))
     app, _ = build()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=API_PORT, log_level="warning", ws_max_size=1024))
 

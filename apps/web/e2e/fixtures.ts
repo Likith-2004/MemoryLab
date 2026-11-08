@@ -1,9 +1,10 @@
 import { expect, test as base, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 export const CANARY = "sk-ant-CANARY-0123456789abcdef";
 export const XSS = JSON.parse(readFileSync(new URL("./xss-corpus.json", import.meta.url), "utf8")) as string[];
-export const seed = () => JSON.parse(readFileSync(process.env.E2E_SEED_FILE ?? "/tmp/memorylab-e2e-seed.json", "utf8")) as {
+export const seed = () => JSON.parse(readFileSync(join(process.env.E2E_DIR!, "seed.json"), "utf8")) as {
   game: string; owner: string; admin: string; other: string; password: string; run: string; owner_id: string; admin_id: string; other_id: string; api: string;
 };
 

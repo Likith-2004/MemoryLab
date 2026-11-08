@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 import { execFileSync } from "node:child_process";
-import { homedir } from "node:os";
+import { mkdtempSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 /** The browser tests run against a PRODUCTION build (`next build` first: `make web-e2e` / the gate does it) and the real API stack
@@ -11,6 +12,9 @@ const sb = Object.fromEntries(
     .split("\n").filter((l) => l.includes("=")).map((l) => { const i = l.indexOf("="); return [l.slice(0, i), l.slice(i + 1).replace(/^"|"$/g, "")]; }),
 ) as Record<string, string>;
 
+// One private directory per run holds the object store, the seed file and the web server log, so two runs never clobber each other.
+// Workers inherit it through the environment.
+const dir = (process.env.E2E_DIR ??= mkdtempSync(join(tmpdir(), "memorylab-e2e-")));
 const WEB = "http://localhost:3010";
 const API = "http://127.0.0.1:8010";
 export const CANARY = "sk-ant-CANARY-0123456789abcdef";
@@ -34,11 +38,11 @@ export default defineConfig({
       timeout: 90_000,
       reuseExistingServer: false,
       gracefulShutdown: { signal: "SIGTERM", timeout: 60_000 },   // let the harness delete what it created
-      env: { E2E_WEB_ORIGIN: WEB, E2E_CANARY_KEY: CANARY, E2E_API_PORT: "8010", E2E_STORE: "/tmp/memorylab-e2e-store" },
+      env: { E2E_WEB_ORIGIN: WEB, E2E_CANARY_KEY: CANARY, E2E_API_PORT: "8010", E2E_DIR: dir },
     },
     {
       // stdout/stderr go to a file so the canary test can prove the web server never logged the provider key
-      command: `sh -c 'npx next start -p 3010 > /tmp/memorylab-e2e-web.log 2>&1'`,
+      command: `sh -c 'npx next start -p 3010 > ${dir}/web.log 2>&1'`,
       url: `${WEB}/leaderboard`,
       timeout: 60_000,
       reuseExistingServer: false,

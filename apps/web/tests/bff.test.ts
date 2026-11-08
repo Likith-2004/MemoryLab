@@ -368,3 +368,27 @@ describe("token helpers", () => {
     expect(r.status).toBe(403);
   });
 });
+
+describe("limiter memory", () => {
+  it("drops keys once their window has passed and caps the map", async () => {
+    const { limited, limiterSize, sweepLimiter } = await import("@/server/guard");
+    const t0 = 1_000_000;
+    sweepLimiter(t0 + 10 ** 13);                               // start from an empty map whatever earlier tests left
+    for (let i = 0; i < 50; i++) limited(`k${i}`, 5, 60, t0);
+    expect(limiterSize()).toBe(50);
+    sweepLimiter(t0 + 30_000);
+    expect(limiterSize()).toBe(50);                            // still inside the window
+    sweepLimiter(t0 + 61_000);
+    expect(limiterSize()).toBe(0);                             // all gone
+    for (let i = 0; i < 10_500; i++) limited(`flood${i}`, 5, 3600, t0);
+    expect(limiterSize()).toBeLessThanOrEqual(10_000);         // capped, oldest evicted
+    expect(limited("flood10499", 1, 3600, t0)).toBe(true);     // the newest key was kept (and is at its limit)
+    sweepLimiter(t0 + 10 ** 13);
+  });
+  it("still limits correctly", async () => {
+    const { limited } = await import("@/server/guard");
+    const r = [1, 2, 3, 4].map(() => limited("same", 3, 60, 5_000_000));
+    expect(r).toEqual([false, false, false, true]);
+    expect(limited("same", 3, 60, 5_000_000 + 61_000)).toBe(false);
+  });
+});

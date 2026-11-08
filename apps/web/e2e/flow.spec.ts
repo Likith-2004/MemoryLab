@@ -83,7 +83,7 @@ test("launch, watch live, open the memory drawer, scrub the replay, export", asy
   expect(exp.status).toBe(200);
 
   // canary: the provider key is in no log, no cache and no temp file the web server or this test run wrote
-  const roots = [join(import.meta.dirname, "..", ".next", "cache"), "/tmp/memorylab-e2e-web.log"];
+  const roots = [join(import.meta.dirname, "..", ".next", "cache"), join(process.env.E2E_DIR!, "web.log")];
   const hits: string[] = [];
   for (const root of roots) {
     let paths: string[] = [];
