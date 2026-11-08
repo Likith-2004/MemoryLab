@@ -100,8 +100,17 @@ class ScrubFilter(logging.Filter):
         super().__init__()
         self._redactor = redactor or Redactor()
 
+    def _arg(self, value: Any) -> Any:
+        """Numbers, booleans and None are left alone (`%d` must still format); a str is scrubbed; anything else
+        is rendered with str() and scrubbed, as before."""
+        if value is None or isinstance(value, bool | int | float):
+            return value
+        return self._redactor.text(value if isinstance(value, str) else str(value))
+
     def filter(self, record: logging.LogRecord) -> bool:
         record.msg = self._redactor.text(str(record.msg))
-        if record.args:
-            record.args = tuple(self._redactor.text(str(a)) for a in (record.args if isinstance(record.args, tuple) else (record.args,)))
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._arg(a) for a in record.args)
+        elif record.args:                                  # logging unwraps a lone dict into the mapping form
+            record.args = {k: self._arg(v) for k, v in record.args.items()}
         return True

@@ -132,3 +132,16 @@ def test_a_short_service_token_is_refused_at_startup(api) -> None:  # type: igno
     _, orch, _ = api
     with pytest.raises(ValueError):
         create_app(orch, b"short")
+
+
+def test_a_fork_is_refused_until_the_worker_can_start_from_a_checkpoint(api) -> None:  # type: ignore[no-untyped-def]
+    """The API sends `parent` for forks. Running one from step 0 would silently be a different run, so refuse."""
+    world, orch, client = api
+    run_id = world.register()
+    parent = {"run_id": "r1", "checkpoint_id": "c1", "step": 3}
+    r = client.post("/internal/runs", json=body(run_id, parent=parent), headers=H)
+    assert r.status_code == 422 and r.json()["code"] == "validation_failed"
+    assert "checkpoint" in r.json()["title"] and orch.scheduler.snapshot()["queued"] == []
+    bad = client.post("/internal/runs", json=body(run_id, parent={**parent, "extra": 1}), headers=H)
+    assert bad.status_code == 422
+    assert client.post("/internal/runs", json=body(run_id), headers=H).status_code == 202      # without parent: unchanged

@@ -1,6 +1,6 @@
 # Local gate commands. Everything runs on this machine; nothing is deployed.
 BIN := $(CURDIR)/.venv/bin
-PKGS := packages/labharness packages/runlog services/ingest services/egressproxy services/worker services/orchestrator
+PKGS := packages/labharness packages/runlog services/ingest services/egressproxy services/worker services/orchestrator services/api services/accounts
 
 .PHONY: sync test lint secrets gate
 sync:
@@ -17,4 +17,5 @@ secrets:
 	gitleaks git --no-banner
 	gitleaks dir --no-banner .
 
+gate: export MEMORYLAB_REQUIRE_DB=1
 gate: lint test secrets

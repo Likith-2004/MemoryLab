@@ -102,6 +102,25 @@ def test_scrub_filter_cleans_log_records_and_args() -> None:
     assert KEY not in plain.getMessage()
 
 
+def test_scrub_filter_leaves_numbers_booleans_and_none_alone_and_still_scrubs_strings() -> None:
+    f = ScrubFilter(Redactor([ODD_KEY]))
+    record = logging.LogRecord("x", logging.WARNING, __file__, 1, "reaped %d runs in %.1fs ok=%s none=%s key=%s",
+                               (3, 1.5, True, None, ODD_KEY), None)
+    assert f.filter(record)
+    assert record.args[:4] == (3, 1.5, True, None)                  # type: ignore[index]
+    rendered = record.getMessage()
+    assert rendered.startswith("reaped 3 runs in 1.5s ok=True none=None") and ODD_KEY not in rendered
+
+
+def test_scrub_filter_handles_the_mapping_form_and_non_string_objects() -> None:
+    f = ScrubFilter(Redactor([ODD_KEY]))
+    record = logging.LogRecord("x", logging.ERROR, __file__, 1, "n=%(n)d key=%(k)s err=%(e)s",
+                               ({"n": 7, "k": ODD_KEY, "e": ValueError(ODD_KEY)},), None)
+    assert f.filter(record)
+    rendered = record.getMessage()
+    assert rendered.startswith("n=7 ") and ODD_KEY not in rendered
+
+
 @pytest.mark.parametrize("short", ["abcd1234", "k" * 9, "x1y2z3w4v5u"])
 def test_short_keys_are_still_redacted_exactly(short: str) -> None:
     r = Redactor([short])

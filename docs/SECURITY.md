@@ -80,6 +80,15 @@ bound resource use; validation errors never echo input; internal errors return a
 
 Verified in a real container (`services/orchestrator/tests/test_docker.py`): uid 10001, empty effective capabilities, `NoNewPrivs`, read-only root, noexec tmpfs, no docker socket, no secret-like env vars; no direct TCP to 1.1.1.1:443, 8.8.8.8:53 or the gateway; no DNS; through the proxy `example.com`, `api.anthropic.com` (not allowlisted in this test) and raw IPs get 403 while the allowlisted ingest gets 200; a fork bomb stops below the pids limit; a 900 MB allocation under a 128 MB limit is OOM-killed (137); missed heartbeats kill and remove the container. NOT VERIFIED: gVisor isolation (not installed), egress to the real provider host (no key), host-level firewalling. See DECISIONS M5-1.
 
+## U-9 API, auth and RLS (M6)
+- Identity is the verified JWT `sub` only; roles from `profiles.role`; unit and real-GoTrue tests (algorithm confusion, wrong aud/exp/kid, anon/service keys, JWKS outage fails closed, no fetch amplification).
+- RLS forced on every table; service-only tables have no user grants at all. A user cannot set status, counters, owner, caps or `deleted_at`; a verified benchmark run cannot go private.
+- API reads run under the caller's role with `request.jwt.claims` set (PostgREST-equivalent), so policies authorize; the service role is not present in the public API process.
+- Authz matrix: every run-scoped route x {anon, owner, other, admin} x {private, unlisted, public}; hidden = missing = 404.
+- Provider key: request body only, `SecretStr`, never stored/returned/echoed (validation errors never echo input); canary test greps every public table.
+- Enumeration: login/reset uniform (GoTrue, tested); signup uniform only via our endpoint (M6-4). Timing checks are coarse medians, not proofs.
+- Open: M6-2 (unlisted enumerable by table query), M6-7 (orphan queued rows), CAPTCHA and gateway rules not run locally, Origin check for the WebSocket not built (WebSocket not built).
+
 ## U-2 Dependency attack surface
 
 `pysdl2-dll` bundles image/audio codec libraries that the null-window harness never uses

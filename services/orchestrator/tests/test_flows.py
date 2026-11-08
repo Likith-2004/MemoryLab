@@ -13,7 +13,7 @@ from runlog.replay import reexecute, verify_log
 from conftest import CANARY, RUN_CONFIG, FakeProcess, make_config, submission
 from orchestrator.core import SubmitError
 from orchestrator.ingest_api import IngestApiError
-from orchestrator.scheduler import BreakerOpen, UserBusy
+from orchestrator.scheduler import BreakerOpen, Duplicate, UserBusy
 
 
 def states(world, run_id):  # type: ignore[no-untyped-def]
@@ -298,3 +298,27 @@ def test_the_orchestrator_never_leaves_a_run_unfinished_after_an_internal_error(
     orch = world.orch()
     go(world, orch, submission(run_id))
     assert states(world, run_id)[-1] == ("failed", "RuntimeError") and CANARY not in repr(world.repo.runs)
+
+
+def test_submit_is_idempotent_per_run_id(world) -> None:  # type: ignore[no-untyped-def]
+    run_id = world.register()
+    orch = world.orch()
+    first = orch.submit(submission(run_id))
+    again = orch.submit(submission(run_id))                          # the API retries an ambiguous submit
+    assert first["status"] == "queued" and "duplicate" not in first
+    assert again == {"run_id": run_id, "status": "queued", "duplicate": True}
+    assert orch.scheduler.snapshot()["queued"] == [run_id]           # queued once
+    assert states(world, run_id) == [("queued", None)]               # one queued event, not two
+    orch.tick()
+    assert orch.wait_idle(30)
+    assert orch.submit(submission(run_id)) == {"run_id": run_id, "status": "finished", "duplicate": True}
+    assert len(world.launched) == 1                                   # and started exactly once
+
+
+def test_a_repeated_submit_for_another_user_is_still_a_conflict(world) -> None:  # type: ignore[no-untyped-def]
+    run_id = world.register()
+    orch = world.orch()
+    orch.submit(submission(run_id, user="owner"))
+    with pytest.raises(Duplicate):
+        orch.submit(submission(run_id, user="someone-else", ip="other"))
+    assert orch.scheduler.snapshot()["queued"] == [run_id]

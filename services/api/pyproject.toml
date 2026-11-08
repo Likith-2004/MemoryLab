@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "api"
+version = "0.1.0"
+description = "Memory Lab public API: verified Supabase JWT, RLS-backed reads, one visibility dependency"
+requires-python = ">=3.14"
+dependencies = ["runlog", "labharness", "ingest", "fastapi>=0.115", "uvicorn>=0.30", "psycopg[binary,pool]>=3.2", "pyjwt[crypto]>=2.9", "httpx>=0.27"]
+
+[tool.uv.sources]
+runlog = { workspace = true }
+labharness = { workspace = true }
+ingest = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/api"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["RUF059", "RUF015"]
+
+[tool.mypy]
+strict = true
+python_version = "3.14"
+plugins = ["pydantic.mypy"]

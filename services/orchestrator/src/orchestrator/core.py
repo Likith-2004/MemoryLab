@@ -29,7 +29,7 @@ from .ingest_api import IngestApi
 from .keybox import KeyBox
 from .process import PopenProcess, ProcessLike
 from .sandbox import Sandbox, SandboxResult
-from .scheduler import RunRequest, Scheduler
+from .scheduler import Duplicate, RunRequest, Scheduler
 
 log = logging.getLogger("orchestrator")
 log.addFilter(ScrubFilter())
@@ -74,6 +74,7 @@ class Submission:
     run_config: dict[str, Any]
     preset_text: str | None
     provider: dict[str, Any]        # {"name": "anthropic", "api_key": "..."} (or fake in tests)
+    parent: dict[str, Any] | None = None   # {"run_id", "checkpoint_id", "step"} for a fork
 
 
 class Orchestrator:
@@ -148,14 +149,27 @@ class Orchestrator:
 
     def submit(self, sub: Submission) -> dict[str, Any]:
         """Validate and queue. Raises SubmitError (422) or AdmissionError (429/503/409). The key is
-        held in a KeyBox: memory only, never written anywhere."""
+        held in a KeyBox: memory only, never written anywhere. Idempotent per run_id: a repeat returns the
+        current status and queues nothing."""
+        if sub.parent is not None:
+            # The worker cannot yet start a job from a checkpoint (Session.restore exists, the job spec and the
+            # worker do not use it). Refuse loudly: running a fork from step 0 would silently be a different run.
+            raise SubmitError("validation_failed", "starting from a checkpoint is not implemented in the worker yet")
         config, preset_text, key, script = self._validate(sub)
         box = KeyBox(key) if key is not None else KeyBox(SecretKey("placeholder-unused-key"))
         if key is None:
             box.discard()
         req = RunRequest(sub.run_id, sub.user_id, sub.ip_hash, sub.game, config, preset_text,
                          str(sub.provider["name"]), box, script, self._clock())
-        position = self.scheduler.submit(req)
+        try:
+            position = self.scheduler.submit(req)
+        except Duplicate:
+            # idempotent per run_id: the API retries an ambiguous submit, and the first attempt may have landed.
+            # Only for the same user: another user naming an existing run id is still a conflict.
+            box.discard()
+            if self.scheduler.user_of(sub.run_id) != sub.user_id:
+                raise
+            return {"run_id": sub.run_id, "status": self.scheduler.status_of(sub.run_id), "duplicate": True}
         try:
             self._api(sub.run_id).state("queued")
         except Exception:
