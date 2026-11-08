@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 import pytest
 
-from conftest import Env
+from conftest import Env, bearer
 from test_gotrue import Auth, auth, real, stack  # noqa: F401  (fixtures)
 from test_runs_create import body
 
@@ -131,3 +131,27 @@ def test_the_readers_are_not_reachable_through_postgrest(rest: Any) -> None:
                      ("run_checkpoints", {"p_run_id": run}), ("run_score", {"p_run_id": run})):
         assert rest.post(f"/rpc/{fn}", args).status_code == 404, fn
         assert rest.post(f"/rpc/{fn}", args, {"content-profile": "api_private"}).status_code in (404, 406), fn
+
+
+def test_experiment_run_ids_are_not_readable_through_the_data_api(env: Env, rest: Any, stack: dict[str, str]) -> None:
+    from test_experiments import arm
+    owner, game = env.user(), env.game()
+    private, unlisted, public = arm(env, owner, game, "none@1"), arm(env, owner, game, "general@1", "unlisted"), \
+        arm(env, owner, game, "failures_only@1", "public")
+    eid = env.client.post("/api/v1/experiments", json={"title": "pub", "variable": "preset_ref", "visibility": "public",
+                                                       "run_ids": [private, unlisted, public]},
+                           headers=bearer(owner)).json()["id"]
+    base = stack["API_URL"] + "/rest/v1"
+    anon = {"apikey": stack["PUBLISHABLE_KEY"]}
+    for headers in (anon, {**anon, "authorization": "Bearer " + rest.token}):
+        for select in ("run_ids", "*", "id,run_ids", "title,run_ids"):
+            r = httpx.get(f"{base}/experiments?id=eq.{eid}&select={select}", headers=headers)
+            assert r.status_code in (401, 403) and private not in r.text and unlisted not in r.text, (select, r.text)
+        ok = httpx.get(f"{base}/experiments?id=eq.{eid}&select=id,title,variable,visibility", headers=headers)
+        assert ok.status_code == 200 and ok.json()[0]["title"] == "pub"
+        assert httpx.get(f"{base}/experiments?id=eq.{eid}&run_ids=cs.%7B{private}%7D&select=id", headers=headers).status_code in (401, 403)
+    # the API still serves the same data, filtered per viewer
+    assert [r["run_id"] for r in env.client.get(f"/api/v1/experiments/{eid}").json()["runs"]] == [public]
+    assert env.client.get(f"/api/v1/experiments/{eid}/compare").status_code == 200
+    assert env.client.get("/api/v1/experiments", headers=bearer(owner)).json()[0]["n_runs"] == 3
+

@@ -795,9 +795,8 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
 
     @app.get(f"{API}/experiments", dependencies=[Guard])
     def list_experiments(user: Authed, conn: Sess, limit: Annotated[int, Query(ge=1, le=100)] = 50) -> list[dict[str, Any]]:
-        rows = conn.execute("select id, title, variable, visibility, cardinality(run_ids) as n_runs, created_at "
-                            "from public.experiments where owner_id = %s order by created_at desc, id desc limit %s",
-                            (user.id, limit)).fetchall()
+        rows = conn.execute("select id, title, variable, visibility, n_runs, created_at from api_private.my_experiments(%s)",
+                            (limit,)).fetchall()
         return [_jsonable(r) for r in rows]
 
     @app.get(API + "/experiments/{experiment_id}", dependencies=[Guard])
@@ -815,11 +814,12 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
                          (eid, body.title, body.visibility, add or None, remove or None))
         except RaiseException as exc:
             raise experiment_error(exc) from None
-        current = conn.execute("select variable, run_ids from public.experiments where id = %s and owner_id = %s",
+        current = conn.execute("select variable from public.experiments where id = %s and owner_id = %s",
                                (eid, user.id)).fetchone()
-        if current is None:
+        ids = conn.execute("select api_private.my_experiment_run_ids(%s) as ids", (eid,)).fetchone()
+        if current is None or ids is None or ids["ids"] is None:
             raise NotFound
-        check_variable(conn, user, [str(r) for r in current["run_ids"]], current["variable"])   # rolls the change back
+        check_variable(conn, user, [str(r) for r in ids["ids"]], current["variable"])   # rolls the change back
         return experiment_view(conn, eid)
 
     def compare_guard(request: Request, user: Annotated[User | None, Depends(bearer)]) -> None:

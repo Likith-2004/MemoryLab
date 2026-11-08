@@ -542,3 +542,28 @@ def test_stream_ticket_functions_check_visibility_and_the_account_and_consume_on
     with pytest.raises(psycopg.errors.InsufficientPrivilege):                              # not a table anyone can read
         db.q("select * from public.stream_tickets")
     db.x("rollback to savepoint s")
+
+
+# Columns of these types can carry other tables' ids or user-chosen structure. Anything readable by a user role must be
+# listed here on purpose, with the reason.
+READABLE_STRUCTURED_COLUMNS = {
+    ("run_configs", "config_json"),     # a public run's configuration is public; policy limits rows to public runs
+    ("runs", "fork_patch"),             # the config diff of a run the viewer may list
+}
+
+
+def test_no_array_or_jsonb_column_is_readable_by_a_user_role_unless_allowlisted(db: Db) -> None:
+    """Catalogue sweep: experiments.run_ids once leaked private run ids this way."""
+    cols = db.q("select c.table_name t, c.column_name col from information_schema.columns c "
+                "where c.table_schema = 'public' and (c.data_type in ('jsonb', 'json') or c.data_type = 'ARRAY')")
+    found = {(c["t"], c["col"]) for c in cols
+             for role in ("anon", "authenticated")
+             if db.q("select has_column_privilege(%s, %s, %s, 'select') p", role, f"public.{c['t']}", c["col"])[0]["p"]}
+    assert found == READABLE_STRUCTURED_COLUMNS, found ^ READABLE_STRUCTURED_COLUMNS
+
+
+def test_experiments_run_ids_has_no_select_privilege_for_anyone_but_the_service(db: Db) -> None:
+    for role in ("anon", "authenticated"):
+        assert db.q("select has_column_privilege(%s, 'public.experiments', 'run_ids', 'select') p", role)[0]["p"] is False
+        assert db.q("select has_table_privilege(%s, 'public.experiments', 'select') p", role)[0]["p"] is False
+        assert db.q("select has_column_privilege(%s, 'public.experiments', 'title', 'select') p", role)[0]["p"] is True
