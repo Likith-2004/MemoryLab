@@ -6,6 +6,7 @@ import os
 
 import httpx
 from fastapi import FastAPI
+from runlog.envfile import secret_env
 
 from .app import create_app
 from .config import OrchestratorConfig, SandboxResources
@@ -14,7 +15,7 @@ from .core import Orchestrator
 
 def config_from_env(env: dict[str, str] | None = None) -> tuple[OrchestratorConfig, bytes]:
     e = os.environ if env is None else env
-    token, secret = e["MEMORYLAB_ORCHESTRATOR_TOKEN"].encode(), e["MEMORYLAB_TOKEN_SECRET"].encode()
+    token, secret = secret_env("MEMORYLAB_ORCHESTRATOR_TOKEN", e).encode(), secret_env("MEMORYLAB_TOKEN_SECRET", e).encode()
     if len(token) < 32 or len(secret) < 32:
         raise ValueError("MEMORYLAB_ORCHESTRATOR_TOKEN and MEMORYLAB_TOKEN_SECRET must be at least 32 bytes")
     cfg = OrchestratorConfig(

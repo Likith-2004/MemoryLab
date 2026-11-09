@@ -4,6 +4,7 @@ so a misconfigured deployment fails at start. Internal service: only the orchest
 import os
 
 from fastapi import FastAPI
+from runlog.envfile import secret_env
 from runlog.store import LocalObjectStore
 
 from .app import create_app
@@ -12,8 +13,8 @@ from .service import IngestService
 
 
 def build() -> FastAPI:
-    secret = os.environ["MEMORYLAB_TOKEN_SECRET"].encode()
+    secret = secret_env("MEMORYLAB_TOKEN_SECRET").encode()
     if len(secret) < 32:
         raise ValueError("MEMORYLAB_TOKEN_SECRET must be at least 32 bytes")
-    repo = PostgresRunRepository(os.environ["MEMORYLAB_SERVICE_DB_URL"])
+    repo = PostgresRunRepository(secret_env("MEMORYLAB_SERVICE_DB_URL"))
     return create_app(IngestService(repo, LocalObjectStore(os.environ["MEMORYLAB_OBJECT_STORE"]), secret))

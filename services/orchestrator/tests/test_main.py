@@ -26,3 +26,13 @@ def test_a_missing_value_fails_at_start(name: str) -> None:
 def test_a_short_secret_fails_at_start(name: str) -> None:
     with pytest.raises(ValueError):
         config_from_env(dict(ENV, **{name: "short"}))
+
+
+def test_the_secrets_can_come_from_files(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    (tmp_path / "t").write_text("t" * 40 + "\n")
+    (tmp_path / "s").write_text("s" * 40 + "\n")
+    env = {k: v for k, v in ENV.items() if k not in ("MEMORYLAB_ORCHESTRATOR_TOKEN", "MEMORYLAB_TOKEN_SECRET")}
+    cfg, token = config_from_env({**env, "MEMORYLAB_ORCHESTRATOR_TOKEN_FILE": str(tmp_path / "t"), "MEMORYLAB_TOKEN_SECRET_FILE": str(tmp_path / "s")})
+    assert token == b"t" * 40 and cfg.token_secret == b"s" * 40
+    with pytest.raises(ValueError):                                              # both forms at once: refused, not silently one of them
+        config_from_env({**ENV, "MEMORYLAB_TOKEN_SECRET_FILE": str(tmp_path / "s")})

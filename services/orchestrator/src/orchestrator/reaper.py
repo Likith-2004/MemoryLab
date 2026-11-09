@@ -172,12 +172,14 @@ class Reaper:
 
 def main() -> None:                                             # pragma: no cover - process entrypoint
     import os
+
+    from runlog.envfile import secret_env
     stop = threading.Event()
     ingest_client = httpx.Client(base_url=os.environ["MEMORYLAB_INGEST_URL"], timeout=15.0)
-    reaper = Reaper(os.environ["MEMORYLAB_SERVICE_DB_URL"],
+    reaper = Reaper(secret_env("MEMORYLAB_SERVICE_DB_URL"),
                     killer=HttpKiller(os.environ["MEMORYLAB_ORCHESTRATOR_URL"],
-                                      os.environ["MEMORYLAB_ORCHESTRATOR_TOKEN"].encode()),
-                    ingest=http_ingest(ingest_client, os.environ["MEMORYLAB_TOKEN_SECRET"].encode()))
+                                      secret_env("MEMORYLAB_ORCHESTRATOR_TOKEN").encode()),
+                    ingest=http_ingest(ingest_client, secret_env("MEMORYLAB_TOKEN_SECRET").encode()))
     try:
         reaper.run_forever(stop, float(os.environ.get("MEMORYLAB_REAPER_PERIOD_S", "60")))
     except KeyboardInterrupt:
