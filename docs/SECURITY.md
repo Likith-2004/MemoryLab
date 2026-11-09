@@ -134,15 +134,21 @@ Evidence index for the launch checklist: `docs/LAUNCH.md`. Topology: `infra/comp
 
 - **The Docker socket never reaches a service that parses requests.** The orchestrator (which accepts API requests and talks to sandboxes) has
   `DOCKER_HOST=tcp://dockerproxy:2375` and no socket mount. `services/dockerproxy` holds the socket, on an internal network that only the
-  orchestrator joins, and is default-deny. It rebuilds each request for the daemon (never forwards the client's bytes, one request per
-  connection, chunked and duplicate headers refused, so no smuggling) and allows only what `orchestrator/dockercmd.py` issues: a create whose
-  every field is one we set (image `memorylab-worker:dev`, name and labels naming one run, non-root user, the sandbox network, read-only
-  root, `CapDrop=[ALL]`, `no-new-privileges`, bounded memory/pids/tmpfs, no environment but an explicit allow-list) or is empty, the
-  attach/start/wait of that container, `kill` and `rm -f` and `inspect` of a container the daemon reports as ours (label and name), and
-  `network inspect` of the sandbox network. Refused with a 403 that names the rule: privileged, any bind or mount, CapAdd, host PID/IPC/UTS/user/
-  network namespaces, devices, port publishing, extra hosts, sysctls, another image or network, a `MaskedPaths: []` (which unmasks `/proc`), any
-  HostConfig field we have not classified, and every other endpoint (list, exec, pull, build, volumes, networks, logs, archive, events, info).
-  Tests: `services/dockerproxy/tests` (137 policy cases, 8 against a fake daemon, 24 against the real daemon and CLI) and the compose smoke
+  orchestrator joins, and is default-deny. It rebuilds each request for the daemon (one request per connection, chunked and duplicate headers
+  refused, so no smuggling) and allows only what `orchestrator/dockercmd.py` issues. A create body is handled in three steps. (1) It is parsed
+  refusing any object with two keys that are equal ignoring case, duplicates included: the daemon's JSON decoder matches field names
+  case-insensitively and a later key overrides an earlier one, so `"hostConfig": {"Privileged": true}` next to `"HostConfig"` was a host escape
+  in the first version (found in review). (2) Every level (top, HostConfig, LogConfig, RestartPolicy, Ulimits items, NetworkingConfig,
+  Labels) accepts only the exact-case fields `docker run` sends; anything else, in any case, is a 403. (3) The values are checked (image
+  `memorylab-worker:dev`, name and labels naming one run, non-root user, the sandbox network, read-only root, `CapDrop=[ALL]`,
+  `no-new-privileges`, bounded memory/pids/tmpfs, no environment but an explicit allow-list, everything else empty), and what is forwarded is a
+  NEW document built from the validated fields, serialised by us: the client's bytes never reach the daemon. Only the create call takes a body;
+  every other call with one is refused. API versions are pinned to 1.44-1.60 (only `/_ping` may go unversioned). Calls on an existing container
+  (attach/start/wait, `kill`, `rm -f`, `inspect`) are forwarded only if the daemon reports the container as ours (label and name), and `network
+  inspect` only for the sandbox network. Refused with a 403 that names the rule: privileged, any bind or mount, CapAdd, host
+  PID/IPC/UTS/user/network namespaces, devices, port publishing, extra hosts, sysctls, another image or network, `MaskedPaths: []` (which unmasks
+  `/proc`), any unclassified field, and every other endpoint (list, exec, pull, build, volumes, networks, logs, archive, events, info).
+  Tests: `services/dockerproxy/tests` (policy, case-variant/duplicate/unknown-key generated cases, a fake daemon that records the forwarded bytes, and the real daemon and CLI) and the compose smoke
   (the same attacks from inside the orchestrator container). RESIDUAL: the filter holds the socket; see `BLOCKED.md` B-15.
 - **Secrets are files, not environment variables.** `docker inspect` shows a container's environment, and `/proc/<pid>/environ` is readable by
   anyone with Docker or root access on the host. The token secret, orchestrator and accounts tokens, blob signing secret, log pepper, GoTrue

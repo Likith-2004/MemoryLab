@@ -10,7 +10,7 @@ Format per milestone: scope, changes, tests/evidence, deviations, tag.
 - API: security headers on every response including 500; `user_busy`/`ip_busy` is the active-run answer, not a 502. Web: robots, sitemap, favicon, OG, `MEMORYLAB_INTERNAL_HTTP_HOSTS`.
 - Docker tests fail on a stale worker image (`memorylab.src` label).
 - Docs: `docs/LAUNCH.md` (every checklist item DONE / PARTIAL / NOT RUN / BLOCKED with evidence), `BLOCKED.md` B-7..B-15, `SECURITY.md` U-10, `DECISIONS.md` M9-1..M9-8.
-- Tests: `services/dockerproxy` 169 (137 policy, 8 against a fake daemon, 24 with the real daemon and CLI); the rest of the added tests are in `runlog`, `ingest`, `orchestrator` (entrypoints, secrets from files, stale image), the API (headers, busy codes), web (vitest and Playwright `seo.spec.ts`); the compose smoke is `make smoke`. Suite totals are in the report that accompanies the final commit.
+- Review fix (critical): the Docker filter now refuses duplicate/case-variant keys, allowlists every level exactly, forwards a rebuilt body, refuses bodies off the create route and pins API versions (M9-9). Tests: `services/dockerproxy`; the rest of the added tests are in `runlog`, `ingest`, `orchestrator` (entrypoints, secrets from files, stale image), the API (headers, busy codes), web (vitest and Playwright `seo.spec.ts`); the compose smoke is `make smoke`. Suite totals are in the report that accompanies the final commit.
 
 ## M8: sessions, dream and resume (on branch `m7-web`)
 

@@ -16,7 +16,7 @@ def create(doc: dict[str, Any], name: str = NAME) -> list[str]:
 @pytest.mark.parametrize("method,target,kind", [
     ("HEAD", "/_ping", "ping"),
     ("GET", "/_ping", "ping"),
-    ("GET", "/version", "version"),
+    ("GET", "/v1.56/version", "version"),
     ("POST", f"/v1.56/containers/create?name={NAME}", "create"),
     ("POST", "/v1.56/containers/4a4ac823f358/attach?stderr=1&stdin=1&stdout=1&stream=1", "attach"),
     ("POST", "/v1.56/containers/4a4ac823f358/start", "start"),
@@ -172,8 +172,8 @@ def test_a_runtime_and_an_environment_variable_are_accepted_only_when_configured
     ({"Env": ["LD_PRELOAD=/tmp/x.so"]}, "Env"),
     ({"Env": [7]}, "Env"),
     ({"NetworkingConfig": {"EndpointsConfig": {"bridge": {}}}}, "NetworkingConfig"),
-    ({"ExposedPorts": {"22/tcp": {}}}, "ExposedPorts"),
-    ({"Healthcheck": {"Test": ["CMD", "x"]}}, "Healthcheck"),
+    ({"ExposedPorts": {"22/tcp": {}}}, "unknown field ExposedPorts"),
+    ({"Healthcheck": {"Test": ["CMD", "x"]}}, "unknown field Healthcheck"),
 ])
 def test_every_way_out_of_the_sandbox_is_refused(changes: dict[str, Any], expect: str) -> None:
     reasons = create(mutated(**changes))

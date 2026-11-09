@@ -189,3 +189,40 @@ def test_everything_else_the_docker_api_offers_is_refused(stack: Running) -> Non
     state = docker("inspect", "-f", "{{.State.Running}}", foreign)
     assert state.stdout.strip() == b"true"                                     # the foreign container was never touched
     assert docker("network", "inspect", "x-evil").returncode != 0              # and nothing was created
+
+
+def raw_create(stack: Running, name: str, doc: dict[str, object]) -> tuple[int, str]:
+    """POST a create straight to the proxy (not through the CLI), so the body is exactly what the test writes."""
+    import http.client
+    import json as _json
+    conn = http.client.HTTPConnection("127.0.0.1", stack.port, timeout=30)
+    conn.request("POST", f"/v1.56/containers/create?name={name}", _json.dumps(doc), {"Content-Type": "application/json"})
+    r = conn.getresponse()
+    return r.status, r.read().decode()
+
+
+def good_doc(stack: Running, run_id: str) -> dict[str, object]:
+    import copy
+
+    from payloads import GOOD
+    doc = copy.deepcopy(GOOD)
+    doc["Labels"] = {"memorylab.owner": "memorylab", "memorylab.run": run_id}
+    doc["HostConfig"]["NetworkMode"] = stack.net  # type: ignore[index]
+    return doc
+
+
+def test_second_spelling_payloads_are_refused_and_nothing_is_created_but_the_good_one_works(stack: Running) -> None:
+    run_id = str(uuid.uuid4())
+    name = f"memorylab-run-{run_id}"
+    stack.created.append(name)
+    extras: list[dict[str, object]] = [
+        {"image": "memorylab-egress:dev"}, {"user": "0"}, {"cmd": ["sh", "-c", "id"]}, {"hostconfig": {"Binds": ["/tmp/x:/host:ro"]}},
+        {"hostConfig": {"Privileged": True, "CapAdd": ["SYS_ADMIN"]}}, {"hostConfig": {"Privileged": True, "Binds": ["/:/host"]}}]
+    for extra in extras:
+        status, _ = raw_create(stack, name, {**good_doc(stack, run_id), **extra})
+        assert status == 403, extra
+        assert not exists(name), extra                                         # the daemon never saw it
+    status, body = raw_create(stack, name, good_doc(stack, run_id))
+    assert status == 201, body
+    info = docker("inspect", "-f", "{{.Config.Image}} {{.Config.User}} {{.HostConfig.Privileged}} {{len .HostConfig.Binds}}", name).stdout.decode().strip()
+    assert info == f"{IMAGE} 10001:10001 false 0"

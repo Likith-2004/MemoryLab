@@ -19,7 +19,7 @@ NAME = re.compile(r"memorylab-run-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4
 IDENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 USER = re.compile(r"[1-9][0-9]{3,8}(:[1-9][0-9]{3,8})?")
 SIGNAL = re.compile(r"(SIG)?[A-Z0-9]{1,10}")
-VERSION = re.compile(r"/v1\.[0-9]{1,3}")
+VERSION = re.compile(r"/v1\.(4[4-9]|5[0-9]|60)")     # the API versions the Docker CLI in our orchestrator image speaks (1.56 today)
 MAX_BODY = 32 * 1024
 
 
@@ -60,8 +60,11 @@ def route(method: str, target: str, policy: Policy) -> Verdict:
     if parts.fragment:
         return deny("malformed path")
     path = parts.path
-    if VERSION.match(path):
-        path = path[path.index("/", 1):] if "/" in path[1:] else "/"
+    versioned = VERSION.match(path)
+    if versioned:
+        path = path[versioned.end():] or "/"
+    if path != "/_ping" and not versioned:
+        return deny("an API version in the supported range is required")      # only the unversioned ping is allowed without one
     if "//" in path or ".." in path.split("/"):
         return deny("malformed path")
     query = parse_qsl(parts.query, keep_blank_values=True)
@@ -191,16 +194,89 @@ def _hostconfig(hc: Mapping[str, Any], p: Policy) -> list[str]:
     return bad
 
 
-def check_create(body: bytes, name: str, policy: Policy) -> list[str]:
-    """The reasons a create request must be refused (empty = accept). `name` is the `name` query parameter."""
+TOP_KEYS = ("Hostname", "Domainname", "User", "AttachStdin", "AttachStdout", "AttachStderr", "Tty", "OpenStdin", "StdinOnce", "Env", "Cmd",
+            "Image", "Volumes", "WorkingDir", "Entrypoint", "Labels", "StopTimeout", "HostConfig", "NetworkingConfig")
+HOSTCONFIG_KEYS = CHECKED | RESOURCE_KNOBS | {"Runtime"}
+SCALAR = (int, float, str, bool, type(None))
+
+
+def _strict(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """A JSON object whose keys are unambiguous. The daemon's decoder matches field names case-insensitively and a later key overrides an
+    earlier one, so `{"Image": a, "image": b}` means b to the daemon and a to a case-sensitive reader: refuse any object in which two keys
+    are equal ignoring case (which includes exact duplicates)."""
+    seen: set[str] = set()
+    for key, _ in pairs:
+        if key.casefold() in seen:
+            raise ValueError("ambiguous key")
+        seen.add(key.casefold())
+    return dict(pairs)
+
+
+def _no_constant(_: str) -> Any:
+    raise ValueError("not JSON")
+
+
+def _shape(doc: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """Default-deny on the structure: only the exact-case fields `docker run` sends, at every level. Returns the NEW document built from
+    those fields alone (what is forwarded; the client's bytes never are) and the reasons to refuse."""
+    bad: list[str] = []
+    extra = sorted(set(doc) - set(TOP_KEYS))
+    if extra:
+        bad.append("unknown field " + ", ".join(k[:40] for k in extra))
+    hc = doc.get("HostConfig")
+    if not isinstance(hc, dict):
+        return {}, bad + ["HostConfig"]
+    extra = sorted(set(hc) - HOSTCONFIG_KEYS)
+    if extra:
+        bad.append("unknown HostConfig field " + ", ".join(k[:40] for k in extra))
+    for key, value in hc.items():
+        if key in RESOURCE_KNOBS and not (isinstance(value, SCALAR) or value == [] or value == {} or
+                                          (key == "ConsoleSize" and isinstance(value, list) and len(value) == 2 and all(type(v) is int for v in value))):
+            bad.append(f"HostConfig.{key}")
+    log, restart = hc.get("LogConfig"), hc.get("RestartPolicy")
+    if log is not None and (not isinstance(log, dict) or set(log) - {"Type", "Config"} or log.get("Config") not in (None, {})):
+        bad.append("HostConfig.LogConfig")
+    if restart is not None and (not isinstance(restart, dict) or set(restart) - {"Name", "MaximumRetryCount"}):
+        bad.append("HostConfig.RestartPolicy")
+    for u in hc.get("Ulimits") or []:
+        if not isinstance(u, dict) or set(u) != {"Name", "Hard", "Soft"}:
+            bad.append("HostConfig.Ulimits")
+    net = doc.get("NetworkingConfig")
+    if net is not None:
+        eps = net.get("EndpointsConfig") if isinstance(net, dict) else None
+        if not isinstance(net, dict) or set(net) - {"EndpointsConfig"} or not isinstance(eps, dict) or any(v not in ({}, None) for v in eps.values()):
+            bad.append("NetworkingConfig")
+    labels = doc.get("Labels")
+    if isinstance(labels, dict) and set(labels) != {OWNER_LABEL, "memorylab.run"}:
+        bad.append("Labels")
+    clean = {k: doc[k] for k in TOP_KEYS if k in doc}
+    clean["HostConfig"] = {k: hc[k] for k in sorted(hc) if k in HOSTCONFIG_KEYS}
+    return clean, bad
+
+
+def parse_create(body: bytes, name: str, policy: Policy) -> tuple[list[str], bytes]:
+    """(reasons to refuse, the canonical body to forward). `name` is the `name` query parameter. Empty reasons = accept."""
     if len(body) > MAX_BODY:
-        return ["body too large"]
+        return ["body too large"], b""
     try:
-        doc = json.loads(body)
-    except ValueError:
-        return ["body is not JSON"]
-    if not isinstance(doc, dict) or not isinstance(doc.get("HostConfig"), dict):
-        return ["body is not a container configuration"]
+        doc = json.loads(body, object_pairs_hook=_strict, parse_constant=_no_constant)
+    except (ValueError, RecursionError):
+        return ["body is not JSON, or has duplicate or case-variant keys"], b""
+    if not isinstance(doc, dict):
+        return ["body is not a container configuration"], b""
+    clean, bad = _shape(doc)
+    if not clean:
+        return sorted(set(bad)), b""
+    bad += _semantics(clean, name, policy)
+    reasons = sorted(set(bad))
+    return reasons, b"" if reasons else json.dumps(clean, separators=(",", ":"), sort_keys=True).encode()
+
+
+def check_create(body: bytes, name: str, policy: Policy) -> list[str]:
+    return parse_create(body, name, policy)[0]
+
+
+def _semantics(doc: dict[str, Any], name: str, policy: Policy) -> list[str]:
     bad: list[str] = []
     if doc.get("Image") not in policy.images:
         bad.append("Image")
@@ -211,17 +287,26 @@ def check_create(body: bytes, name: str, policy: Policy) -> list[str]:
         bad.append("User")                                              # never root
     if not _empty(doc.get("Cmd")) or not _empty(doc.get("Entrypoint")) or not _empty(doc.get("WorkingDir")) or not _empty(doc.get("Volumes")):
         bad.append("Cmd/Entrypoint/WorkingDir/Volumes")                 # the image decides what runs
-    for entry in doc.get("Env") or []:
+    env = doc.get("Env")
+    if env is not None and not isinstance(env, list):
+        bad.append("Env")
+    for entry in env or []:
         if not isinstance(entry, str) or entry.partition("=")[0] not in policy.env_names:
             bad.append("Env")
-    for key in ("Hostname", "Domainname", "MacAddress", "NetworkDisabled", "ExposedPorts", "Healthcheck", "OnBuild", "Shell"):
+    for key in ("Hostname", "Domainname", "Tty"):
         if not _empty(doc.get(key)):
             bad.append(key)
+    for key in ("AttachStdin", "AttachStdout", "AttachStderr", "OpenStdin", "StdinOnce"):
+        if not isinstance(doc.get(key), bool):
+            bad.append(key)
+    stop = doc.get("StopTimeout")
+    if stop is not None and (type(stop) is not int or not 0 <= stop <= 120):
+        bad.append("StopTimeout")
     endpoints = (doc.get("NetworkingConfig") or {}).get("EndpointsConfig") or {}
-    if not isinstance(endpoints, dict) or set(endpoints) - {policy.network}:
+    if set(endpoints) - {policy.network}:
         bad.append("NetworkingConfig")
     bad += _hostconfig(doc["HostConfig"], policy)
-    return sorted(set(bad))
+    return bad
 
 
 def is_ours(doc: dict[str, Any] | None) -> bool | None:

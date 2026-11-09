@@ -11,7 +11,7 @@ import logging
 import re
 from typing import Any
 
-from .policy import MAX_BODY, Policy, Verdict, check_create, is_ours, route
+from .policy import MAX_BODY, Policy, Verdict, is_ours, parse_create, route
 
 log = logging.getLogger("dockerproxy")
 MAX_HEAD = 16 * 1024
@@ -119,8 +119,8 @@ class Proxy:
         if not length.isdigit() or int(length) > MAX_BODY:
             raise Refused(413 if length.isdigit() else 400, "bad content-length")
         n = int(length)
-        if verdict.needs_body and n == 0 or (not verdict.needs_body and n and not verdict.upgrade):
-            raise Refused(400, "unexpected body" if n else "a body is required")
+        if verdict.needs_body and n == 0 or (not verdict.needs_body and n):
+            raise Refused(403 if n else 400, "memorylab docker proxy: " + ("this call takes no body" if n else "a body is required"))
         body = rest[:n]
         while len(body) < n:
             chunk = await asyncio.wait_for(reader.read(n - len(body)), self.head_timeout_s)
@@ -128,16 +128,18 @@ class Proxy:
                 raise ConnectionError
             body += chunk
         leftover = rest[n:] if verdict.upgrade else b""
-        await self._authorise(verdict, target, body)
+        body = await self._authorise(verdict, target, body)
         await self._forward(verdict, method, target, headers, body, leftover, reader, writer)
 
-    async def _authorise(self, verdict: Verdict, target: str, body: bytes) -> None:
+    async def _authorise(self, verdict: Verdict, target: str, body: bytes) -> bytes:
+        """Returns the body to forward: for a create, a NEW document built from the validated fields only, never the client's bytes."""
         if verdict.route == "create":
-            reasons = check_create(body, verdict.container or "", self.policy)
+            reasons, canonical = parse_create(body, verdict.container or "", self.policy)
             if reasons:
                 log.warning("refused a container create: %s", ", ".join(reasons))
                 raise Refused(403, "memorylab docker proxy: this container configuration is not allowed: " + ", ".join(reasons))
-        elif verdict.container is not None:
+            return canonical
+        if verdict.container is not None:
             doc = await self._inspect(verdict.container)
             owned = is_ours(doc)
             if owned is None:
@@ -145,6 +147,7 @@ class Proxy:
             if not owned:
                 log.warning("refused %s on a container that is not ours", verdict.route)
                 raise Refused(403, "memorylab docker proxy: not a memorylab sandbox")
+        return body
 
     async def _forward(self, verdict: Verdict, method: str, target: str, headers: dict[str, str], body: bytes, leftover: bytes,
                        reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

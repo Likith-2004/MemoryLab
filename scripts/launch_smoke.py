@@ -155,7 +155,22 @@ def main() -> None:
             attack = run([*compose, "exec", "-T", "orchestrator", *argv])
             if attack.returncode == 0 or "memorylab docker proxy" not in attack.stderr:
                 fail(f"from inside the orchestrator `{' '.join(argv)}` was not refused by the filter: {attack.stderr[-200:]}")
-        say("from inside the orchestrator: privileged, host bind, host network, foreign image, ps and images are all refused by the Docker filter")
+        # a second spelling of a field (the daemon matches names case-insensitively): a raw create from inside the orchestrator must be refused
+        probe_run = str(uuid.uuid4())
+        snippet = (
+            "import json,sys,urllib.request,urllib.error\n"
+            f"doc={{'Image':'memorylab-worker:dev','User':'10001:10001','Labels':{{'memorylab.owner':'memorylab','memorylab.run':'{probe_run}'}},"
+            "'hostConfig':{'Privileged':True,'Binds':['/:/host']},"
+            "'HostConfig':{'NetworkMode':'memorylab-sandbox','ReadonlyRootfs':True,'CapDrop':['ALL'],'SecurityOpt':['no-new-privileges'],'Memory':1073741824,'PidsLimit':128}}\n"
+            f"r=urllib.request.Request('http://dockerproxy:2375/v1.56/containers/create?name=memorylab-run-{probe_run}',json.dumps(doc).encode(),{{'Content-Type':'application/json'}})\n"
+            "try:\n urllib.request.urlopen(r)\nexcept urllib.error.HTTPError as e:\n print(e.code, e.read().decode())\n sys.exit(0 if e.code == 403 else 2)\n"
+            "sys.exit(3)\n")
+        second = run([*compose, "exec", "-T", "orchestrator", "python", "-c", snippet])
+        if second.returncode != 0 or "memorylab docker proxy" not in second.stdout:
+            fail(f"a create with a second spelling of HostConfig was not refused by the filter: {second.stdout[-200:]} {second.stderr[-200:]}")
+        if run(["docker", "container", "inspect", f"memorylab-run-{probe_run}"]).returncode == 0:
+            fail("the second-spelling create produced a container")
+        say("from inside the orchestrator: privileged, host bind, host network, foreign image, ps, images and a second-spelling `hostConfig` create are all refused by the Docker filter")
 
         # least privilege on the networks: the web server is on the API's network and the upstream (GoTrue) network only, so it has no route to
         # the orchestrator, the Docker filter or the egress proxy (those are on internal networks it is not attached to)

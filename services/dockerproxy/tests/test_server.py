@@ -143,13 +143,13 @@ def test_a_disallowed_endpoint_never_reaches_the_daemon() -> None:
 
 def test_a_call_on_a_container_that_is_not_ours_is_refused_and_a_missing_one_is_a_404() -> None:
     async def t(daemon: FakeDaemon, port: int) -> None:
-        for method, target in (("POST", "/containers/postgres/kill"), ("DELETE", "/containers/postgres?force=1"), ("POST", "/containers/postgres/start")):
+        for method, target in (("POST", "/v1.56/containers/postgres/kill"), ("DELETE", "/v1.56/containers/postgres?force=1"), ("POST", "/v1.56/containers/postgres/start")):
             status, _, _ = await call(port, req(method, target))
             assert status == 403
-        status, _, body = await call(port, req("DELETE", "/containers/nothing-here"))
+        status, _, body = await call(port, req("DELETE", "/v1.56/containers/nothing-here"))
         assert status == 404 and "No such container" in json.loads(body)["message"]
         assert [r["line"].split(" ")[0] for r in daemon.requests] == ["GET"] * 4          # only inspects: no kill, no remove, no start was forwarded
-        status, _, _ = await call(port, req("DELETE", f"/containers/{NAME}?force=1"))      # ours: forwarded
+        status, _, _ = await call(port, req("DELETE", f"/v1.56/containers/{NAME}?force=1"))      # ours: forwarded
         assert status == 204 and daemon.requests[-1]["line"].startswith("DELETE")
 
     with_proxy(t)
@@ -157,7 +157,7 @@ def test_a_call_on_a_container_that_is_not_ours_is_refused_and_a_missing_one_is_
 
 def test_chunked_duplicate_and_oversized_requests_are_refused() -> None:
     async def t(daemon: FakeDaemon, port: int) -> None:
-        target = f"/containers/create?name={NAME}"
+        target = f"/v1.56/containers/create?name={NAME}"
         for raw in (
             b"POST " + target.encode() + b" HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
             b"POST " + target.encode() + b" HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\nContent-Length: 500\r\n\r\n12345",
@@ -179,13 +179,13 @@ def test_chunked_duplicate_and_oversized_requests_are_refused() -> None:
 
 def test_a_second_request_smuggled_behind_the_first_is_not_forwarded() -> None:
     async def t(daemon: FakeDaemon, port: int) -> None:
-        raw = req("HEAD", "/_ping") + req("POST", "/containers/postgres/kill")
+        raw = req("HEAD", "/_ping") + req("POST", "/v1.56/containers/postgres/kill")
         await call(port, raw)
         await asyncio.sleep(0.2)
         assert [r["line"] for r in daemon.requests] == ["HEAD /_ping HTTP/1.1"]
         # and a body that contains a whole request is just a body
         body = json.dumps(GOOD).encode() + b"\r\n\r\nPOST /containers/postgres/kill HTTP/1.1\r\n\r\n"
-        await call(port, req("POST", f"/containers/create?name={NAME}", body[: len(json.dumps(GOOD))]) + body[len(json.dumps(GOOD)):])
+        await call(port, req("POST", f"/v1.56/containers/create?name={NAME}", body[: len(json.dumps(GOOD))]) + body[len(json.dumps(GOOD)):])
         assert all("postgres" not in r["line"] for r in daemon.requests)
 
     with_proxy(t)
@@ -212,8 +212,46 @@ def test_attach_is_a_two_way_stream_and_bytes_sent_with_the_request_are_kept() -
 
 def test_attach_to_a_container_that_is_not_ours_is_refused_before_any_upgrade() -> None:
     async def t(daemon: FakeDaemon, port: int) -> None:
-        status, _, _ = await call(port, req("POST", "/containers/postgres/attach?stream=1&stdin=1", Connection="Upgrade", Upgrade="tcp"))
+        status, _, _ = await call(port, req("POST", "/v1.56/containers/postgres/attach?stream=1&stdin=1", Connection="Upgrade", Upgrade="tcp"))
         assert status == 403
         assert all("attach" not in r["line"] for r in daemon.requests)
+
+    with_proxy(t)
+
+
+def test_the_daemon_receives_the_canonical_rebuild_not_the_clients_bytes() -> None:
+    from dockerproxy.policy import parse_create
+
+    async def t(daemon: FakeDaemon, port: int) -> None:
+        canonical = parse_create(json.dumps(GOOD).encode(), NAME, POLICY)[1]
+        messy = json.dumps(dict(reversed(list(GOOD.items()))), indent=4).encode()
+        status, _, _ = await call(port, req("POST", f"/v1.56/containers/create?name={NAME}", messy, **{"Content-Type": "application/json"}))
+        assert status == 201
+        sent = daemon.requests[-1]
+        assert sent["body"] == canonical and sent["headers"]["content-length"] == str(len(canonical))
+
+    with_proxy(t)
+
+
+def test_the_reviewers_second_spelling_payloads_never_reach_the_daemon() -> None:
+    async def t(daemon: FakeDaemon, port: int) -> None:
+        for extra in ({"image": "memorylab-egress:dev"}, {"user": "0"}, {"cmd": ["sh"]}, {"hostconfig": {"Binds": ["/:/h"]}},
+                      {"hostConfig": {"Privileged": True, "Binds": ["/:/host"]}}):
+            body = json.dumps({**GOOD, **extra}).encode()
+            status, _, _ = await call(port, req("POST", f"/v1.56/containers/create?name={NAME}", body, **{"Content-Type": "application/json"}))
+            assert status == 403
+        assert daemon.requests == []
+
+    with_proxy(t)
+
+
+def test_a_body_on_any_call_but_create_is_refused() -> None:
+    async def t(daemon: FakeDaemon, port: int) -> None:
+        for method, target in (("POST", f"/v1.56/containers/{NAME}/start"), ("POST", f"/v1.56/containers/{NAME}/kill"),
+                               ("POST", f"/v1.56/containers/{NAME}/wait"), ("DELETE", f"/v1.56/containers/{NAME}"),
+                               ("GET", f"/v1.56/containers/{NAME}/json"), ("POST", "/v1.56/containers/abc123/attach?stream=1&stdin=1")):
+            status, _, _ = await call(port, req(method, target, b'{"x":1}', **{"Content-Type": "application/json"}))
+            assert status == 403, (method, target)
+        assert daemon.requests == []
 
     with_proxy(t)

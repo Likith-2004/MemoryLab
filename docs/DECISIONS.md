@@ -211,6 +211,8 @@ Entry format for charter decisions: ID, context, options, choice, reason, how to
 
 **M9-8 SEO.** Run pages say `noindex` for private and unlisted runs and `robots.txt` does not disallow `/runs/` (a disallowed page's noindex would never be read); the sitemap lists the public pages and the leaderboard's (verified, public) runs only; the OG image is generated, with the site's one-line claim and nothing else.
 
+**M9-9 The Docker filter forwards a body it built, and refuses ambiguity (review fix, critical).** The first `check_create` read exact-case keys from the client's JSON and forwarded the client's bytes, but Go's decoder is case-insensitive and lets a later key win, so `"hostConfig": {"Privileged": true, "Binds": ["/:/host"]}` passed the filter and was obeyed by the daemon (reproduced against the real daemon by the reviewer: image, user, cmd and HostConfig all overridable). Now: any JSON object with keys equal under `casefold()` (duplicates included) is refused at every level, even for map-valued fields such as Labels, which is stricter than needed but cannot be wrong; every struct-like level is an exact-case allowlist taken from what the CLI sends; the forwarded body is `json.dumps` of the validated fields (sorted, compact), so a parser difference we did not foresee cannot reach the daemon; bodies are refused on every route but create; API versions are pinned. The earlier text "a create whose every field is one we set" was false and is corrected in SECURITY.md U-10.
+
 ## Open (not decided here)
 
 - Real public game and its RAM map (spec decision #1; Option A track).
