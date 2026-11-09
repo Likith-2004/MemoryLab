@@ -2,6 +2,12 @@
 
 Format per milestone: scope, changes, tests/evidence, deviations, tag.
 
+## M8: sessions, dream and resume (on branch `m7-web`)
+
+- labharness: `session_len` boundaries (context dropped, emulator and memory kept, capped inject file only), the dream job (own token cap counted in the run total, memory tools only, `dream.*` events with diffs), checkpoints at boundaries and every `checkpoint_every` steps with the model context stored, and resume. runlog/ingest: dream rows are memory mutations; `dream_ops` apart from `memory_ops`.
+- Checkpoints in ingest (state + context blobs, `checkpoints` rows) and the worker/orchestrator resume path: B-6 closed, forking on by default. Web: dream changes before/after side by side in the memory panel, dream events in the log; CLI: `memorylab runs dream`.
+- Tests: labharness +22 (sessions), runlog +6, ingest +17, orchestrator +5 (incl. 1 Docker fork test with two real sandboxes), web +11 vitest and 2 Playwright, CLI +2.
+
 ## M7: web (branch `m7-web`, in progress)
 
 - `apps/web`: Next.js 16 App Router, strict TypeScript, Tailwind with our own tokens. All 13 screens: landing, auth (sign in, sign up, reset, magic link), new run (4 steps + review), live run and replay (one screen, scrub with `?at=`), memory drawer, fork modal, experiment compare, leaderboard, my runs, account, admin, legal drafts and 404. Every listed state: queued, starting, running, session boundary, dreaming, stopping, ended with reason, disconnected/resuming (then polling), capacity_full, key_rejected, n < 5, runs still running, breaker banner.

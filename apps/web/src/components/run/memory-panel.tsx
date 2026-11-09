@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ApiProblem, api, apiText, describe } from "@/lib/client";
 import type { MemoryNode, RunEvent } from "@/lib/types";
-import { memoryVersions } from "@/lib/runmodel";
+import { dreamChanges, memoryVersions, type DreamChange } from "@/lib/runmodel";
 import { Dialog, DialogContent } from "../dialog";
 
 /** The memory tree at the cursor step; a file opens in a drawer with its versions, plain-text content and diffs. */
@@ -10,7 +10,8 @@ export function MemoryPanel({ runId, atStep, events }: { runId: string; atStep: 
   const [tree, setTree] = useState<MemoryNode[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const changes = events.filter((e) => e.type === "mem.write" || e.type === "mem.delete").length;
+  const changes = events.filter((e) => e.type === "mem.write" || e.type === "mem.delete" || e.type === "dream.write" || e.type === "dream.delete").length;
+  const dream = useMemo(() => dreamChanges(events, atStep), [events, atStep]);
   const rejected = events.filter((e) => e.type === "mem.reject" && e.step <= atStep);
 
   useEffect(() => {
@@ -35,6 +36,7 @@ export function MemoryPanel({ runId, atStep, events }: { runId: string; atStep: 
           </li>
         ))}
       </ul>
+      {dream.length ? <DreamDiffs changes={dream} /> : null}
       {rejected.length ? (
         <details className="border-t border-line p-2 text-sm">
           <summary>{rejected.length} rejected write{rejected.length > 1 ? "s" : ""}</summary>
@@ -44,6 +46,36 @@ export function MemoryPanel({ runId, atStep, events }: { runId: string; atStep: 
       <Dialog open={open !== null} onOpenChange={(o) => { if (!o) setOpen(null); }}>
         {open !== null ? <MemoryFile runId={runId} path={open} atStep={atStep} events={events} /> : null}
       </Dialog>
+    </section>
+  );
+}
+
+/** What the dream job changed, before and after, side by side (stacked on phones). Both sides are plain text in <pre>: memory is
+ *  attacker-influenced and is never rendered as markup. A colour is never the only cue: each side is labelled. */
+function DreamDiffs({ changes }: { changes: DreamChange[] }) {
+  const sessions = [...new Set(changes.map((c) => c.session))];
+  return (
+    <section aria-labelledby="dream-h" className="border-t border-line p-2">
+      <h3 id="dream-h" className="mb-1 text-sm font-semibold">Dream changes <span className="mono text-xs text-muted">({changes.length})</span></h3>
+      {sessions.map((n) => (
+        <details key={n} open={sessions.length === 1} className="mb-2 border border-line">
+          <summary className="cursor-pointer px-2 py-1 text-sm">Session {n}: {changes.filter((c) => c.session === n).length} changes</summary>
+          <ul>
+            {changes.filter((c) => c.session === n).map((c, i) => (
+              <li key={`${c.path}-${c.version}-${i}`} className="border-t border-line p-2">
+                <p className="mb-1 text-xs"><span className="mono font-semibold text-memory break-all">{c.path}</span> <span className="mono text-muted">v{c.version} · step {c.step}</span>{" "}
+                  <span className="rounded border border-line px-1 text-xs">{c.kind}</span></p>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <figure className="m-0 min-w-0"><figcaption className="mb-0.5 text-xs text-muted">Before</figcaption>
+                    <pre className="mono max-h-48 overflow-auto whitespace-pre-wrap break-words border border-line bg-surface p-1 text-xs" tabIndex={0} aria-label={`${c.path} before`}>{c.before ?? "(did not exist)"}</pre></figure>
+                  <figure className="m-0 min-w-0"><figcaption className="mb-0.5 text-xs text-muted">After</figcaption>
+                    <pre className="mono max-h-48 overflow-auto whitespace-pre-wrap break-words border border-line bg-surface p-1 text-xs" tabIndex={0} aria-label={`${c.path} after`}>{c.after ?? "(deleted)"}</pre></figure>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ))}
     </section>
   );
 }
@@ -77,7 +109,7 @@ function MemoryFile({ runId, path, atStep, events }: { runId: string; path: stri
             {versions.map((v) => (
               <button key={v.version} type="button" aria-pressed={v.version === version} onClick={() => setVersion(v.version)}
                 className={`mono rounded border px-2 py-0.5 text-xs ${v.version === version ? "border-memory bg-memory-soft" : "border-line"}`}>
-                v{v.version}{v.deleted ? " (deleted)" : ""} · step {v.step}
+                v{v.version}{v.deleted ? " (deleted)" : ""}{v.dream ? " (dream)" : ""} · step {v.step}
               </button>
             ))}
           </div>

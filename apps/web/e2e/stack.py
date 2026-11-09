@@ -120,20 +120,29 @@ def play(run_id: str, *, steps: int = 8, delay: float | None = None, stop: threa
                   ("model.summary", step, {"text": CORPUS[step % len(CORPUS)]}),
                   ("action", step, {"ok": True, "frames": 1, "action": {"press": ["Right"]}}),
                   ("obs", step, {"score": score, "changed": True, "frames": 1, "snapshot": {}, "new_milestones": []})])
-        if step in (2, 5):
+        def note(kind: str, extra: dict[str, Any], step: int = step) -> None:
+            nonlocal version
             version += 1
             content = f"notes v{version}\n" + CORPUS[(step * 3) % len(CORPUS)] + "\n"
             db.execute("insert into public.memory_files (run_id, path, version, step, content, chars, deleted) values (%s, 'notes/a.md', %s, %s, %s, %s, false)",
                        (run_id, version, step, content, len(content)))
-            w.append([("mem.write", step, {"path": "notes/a.md", "version": version, "step": step, "rev": version, "chars": len(content),
-                                          "created": version == 1, "diff": "", "content": content})])
+            w.append([(kind, step, {"path": "notes/a.md", "version": version, "step": step, "rev": version, "chars": len(content),
+                                    "created": version == 1, "diff": "", "content": content, **extra})])
+
+        if step in (2, 5):
+            note("mem.write", {})
         if step == 4:
-            for state in ("session_boundary", "dreaming", "running"):       # the lifecycle around a session boundary
-                w.append([("run.state", step, {"state": state})])
-                if state == "session_boundary":
-                    w.append([("session.boundary", step, {"session": 1})])
-                db.execute("update public.runs set status = %s where id = %s", (state, run_id))
-                time.sleep(delay)
+            w.append([("run.state", step, {"state": "session_boundary"}), ("session.boundary", step, {"session": 1})])
+            db.execute("update public.runs set status = 'session_boundary' where id = %s", (run_id,))
+            time.sleep(delay)
+            w.append([("run.state", step, {"state": "dreaming"})])
+            db.execute("update public.runs set status = 'dreaming' where id = %s", (run_id,))
+            w.append([("dream.start", step, {"session": 1, "budget_tokens": 60000, "max_turns": 6, "memory_rev": version, "files": 1})])
+            time.sleep(delay)
+            note("dream.write", {"kind": "correct"})                         # the dream job rewrites the note between sessions
+            w.append([("dream.end", step, {"session": 1, "turns": 1, "dream_tokens": 80, "changes": 1, "cut_short": None})])
+            w.append([("run.state", step, {"state": "running"})])
+            db.execute("update public.runs set status = 'running' where id = %s", (run_id,))
             db.execute("insert into public.checkpoints (run_id, step, savestate_key, memory_version, transcript_offset, config_hash) values (%s, %s, 'k', %s, 0, %s)",
                        (run_id, step, version, "c" * 64))
         db.execute("update public.runs set steps = %s, tokens = %s where id = %s", (step, step * 120, run_id))

@@ -61,3 +61,13 @@ test("a run in progress shows Stop in the sticky status strip while the page is 
   await stop.click();
   await expect(page.getByRole("status").filter({ hasText: /Stop requested|Run completed/ }).first()).toBeVisible({ timeout: 20_000 });
 });
+
+test("dream diffs stack before over after on a phone and do not scroll sideways", async ({ page }) => {
+  await page.goto(`/runs/${seed().run}`);
+  await page.getByRole("tab", { name: "Memory" }).click();
+  const before = page.getByLabel("notes/a.md before"), after = page.getByLabel("notes/a.md after");
+  await expect(before).toBeVisible();
+  const [b, a] = [await before.boundingBox(), await after.boundingBox()];
+  expect(a!.y).toBeGreaterThan(b!.y);
+  await noHorizontalScroll(page, "dream diff on a phone");
+});

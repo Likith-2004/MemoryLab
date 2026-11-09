@@ -17,7 +17,7 @@ export interface Derived {
   wallS: number | null; // seconds between the first and the last event
 }
 
-const MEMORY_EVENTS = new Set(["mem.write", "mem.delete", "mem.reject"]);
+const MEMORY_EVENTS = new Set(["mem.write", "mem.delete", "mem.reject", "dream.write", "dream.delete"]);
 
 export function isMemoryEvent(e: RunEvent): boolean {
   return MEMORY_EVENTS.has(e.type) || e.type.startsWith("dream.") || (e.type === "mem.read" && e.data.op === "inject");
@@ -83,6 +83,14 @@ export function describeEvent(e: RunEvent): string {
     case "mem.read": return d.op === "inject" ? `injected ${s(d.path)}${d.found ? ` (${s(d.chars)} chars)` : " (missing)"}` : `read ${s(d.path)}`;
     case "mem.reject": return `memory write rejected: ${s(d.reason ?? d.code)}`;
     case "session.boundary": return `session boundary${d.session !== undefined ? ` ${s(d.session)}` : ""}`;
+    case "dream.start": return `dream started (session ${s(d.session)}, budget ${s(d.budget_tokens)} tokens, ${s(d.files)} files)`;
+    case "dream.call": return `dream call ${s(d.turn)} · ${s(d.dream_tokens)} dream tokens`;
+    case "dream.summary": return s(d.text);
+    case "dream.write": return `dream ${s(d.kind)}: ${s(d.path)} v${s(d.version)} (${s(d.chars)} chars)`;
+    case "dream.delete": return `dream prune: ${s(d.path)} v${s(d.version)}`;
+    case "dream.reject": return `dream refused: ${s(d.reason)}`;
+    case "dream.end": return `dream ended: ${s(d.changes)} changes, ${s(d.dream_tokens)} tokens${d.cut_short ? ` (cut short: ${s(d.cut_short)})` : ""}`;
+    case "fork.start": return `forked from run ${s(d.parent_run_id).slice(0, 8)} at step ${s(d.parent_step)}`;
     case "checkpoint": return `checkpoint ${s(d.id ?? "")}`.trim();
     case "cap.hit": return `cap hit: ${s(d.cap)} (${s(d.value)} / ${s(d.limit)})`;
     case "error": return `error ${s(d.code)}: ${s(d.message)}`;
@@ -105,16 +113,53 @@ export function toRows(events: readonly RunEvent[], group: boolean, at?: number,
   return rows.slice(-max);
 }
 
-export interface MemVersion { path: string; version: number; step: number; chars: number; deleted: boolean }
+export interface MemVersion { path: string; version: number; step: number; chars: number; deleted: boolean; dream: boolean }
 
 /** File versions as the log recorded them (path, version, step), newest last. */
 export function memoryVersions(events: readonly RunEvent[], at?: number): MemVersion[] {
   const out: MemVersion[] = [];
   for (const e of events) {
     if (at !== undefined && e.step > at) continue;
-    if ((e.type === "mem.write" || e.type === "mem.delete") && typeof e.data.path === "string" && typeof e.data.version === "number") {
-      out.push({ path: e.data.path, version: e.data.version, step: e.step, chars: Number(e.data.chars ?? 0), deleted: e.type === "mem.delete" });
+    const isWrite = e.type === "mem.write" || e.type === "dream.write";
+    const isDelete = e.type === "mem.delete" || e.type === "dream.delete";
+    if ((isWrite || isDelete) && typeof e.data.path === "string" && typeof e.data.version === "number") {
+      out.push({ path: e.data.path, version: e.data.version, step: e.step, chars: Number(e.data.chars ?? 0), deleted: isDelete,
+        dream: e.type.startsWith("dream.") });
     }
+  }
+  return out;
+}
+
+export interface DreamChange {
+  session: number;
+  step: number;
+  path: string;
+  kind: string;            // create | correct | promote | prune
+  version: number;
+  before: string | null;   // the file as it was just before this change (null: it did not exist)
+  after: string | null;    // null for a prune
+}
+
+/** Every change the dream job made, with the file as it was just before it, for a side-by-side view. Text only. */
+export function dreamChanges(events: readonly RunEvent[], at?: number): DreamChange[] {
+  const current = new Map<string, string>(); // live file contents as the log has built them
+  const out: DreamChange[] = [];
+  let session = 0;
+  for (const e of events) {
+    if (at !== undefined && e.step > at) break;
+    const d = e.data;
+    const path = typeof d.path === "string" ? d.path : "";
+    if (e.type === "dream.start") session = Number(d.session ?? session + 1);
+    const writes = e.type === "mem.write" || e.type === "dream.write";
+    const deletes = e.type === "mem.delete" || e.type === "dream.delete";
+    if (!path || !(writes || deletes)) continue;
+    const before = current.has(path) ? current.get(path)! : null;
+    if (e.type.startsWith("dream.")) {
+      out.push({ session, step: e.step, path, kind: String(d.kind ?? (deletes ? "prune" : "correct")), version: Number(d.version ?? 0),
+        before, after: writes ? String(d.content ?? "") : null });
+    }
+    if (writes) current.set(path, String(d.content ?? ""));
+    else current.delete(path);
   }
   return out;
 }

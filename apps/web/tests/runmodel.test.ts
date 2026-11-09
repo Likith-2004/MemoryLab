@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { derive, describeEvent, memoryVersions, percent, toRows } from "@/lib/runmodel";
+import { derive, describeEvent, dreamChanges, memoryVersions, percent, toRows } from "@/lib/runmodel";
 import type { RunEvent } from "@/lib/types";
 
 let seq = 0;
@@ -94,5 +94,55 @@ describe("memory versions and helpers", () => {
   });
   it("percent is clamped", () => {
     expect([percent(50, 100), percent(500, 100), percent(1, 0), percent(0, 10)]).toEqual([50, 100, 0, 0]);
+  });
+});
+
+
+describe("dream changes", () => {
+  const dreamLog = (): RunEvent[] => {
+    seq = 0;
+    return [
+      ev("mem.write", 2, { path: "a.md", version: 1, content: "one\nwrong\n", chars: 10 }),
+      ev("mem.write", 2, { path: "b.md", version: 1, content: "dup\n", chars: 4 }),
+      ev("dream.start", 4, { session: 1 }),
+      ev("dream.write", 4, { path: "a.md", version: 2, content: "one\nmerged: dup\n", chars: 16, kind: "correct" }),
+      ev("dream.delete", 4, { path: "b.md", version: 2, kind: "prune" }),
+      ev("dream.write", 4, { path: "global.md", version: 1, content: "pin", chars: 3, kind: "promote" }),
+      ev("dream.end", 4, { changes: 3 }),
+      ev("mem.write", 5, { path: "a.md", version: 3, content: "agent again", chars: 11 }),
+      ev("dream.start", 8, { session: 2 }),
+      ev("dream.write", 8, { path: "a.md", version: 4, content: "second", chars: 6, kind: "correct" }),
+    ];
+  };
+  it("pairs each dream change with the file as it was just before", () => {
+    const c = dreamChanges(dreamLog());
+    expect(c.map((x) => [x.session, x.path, x.kind, x.before, x.after])).toEqual([
+      [1, "a.md", "correct", "one\nwrong\n", "one\nmerged: dup\n"],
+      [1, "b.md", "prune", "dup\n", null],
+      [1, "global.md", "promote", null, "pin"],
+      [2, "a.md", "correct", "agent again", "second"],        // the agent's later write is the 'before' of the next dream
+    ]);
+  });
+  it("shows only what has happened by the replay cursor, and none when the dream did nothing", () => {
+    expect(dreamChanges(dreamLog(), 3)).toEqual([]);
+    expect(dreamChanges(dreamLog(), 4)).toHaveLength(3);
+    seq = 0;
+    expect(dreamChanges([ev("mem.write", 1, { path: "a", version: 1, content: "x" })])).toEqual([]);
+  });
+  it("keeps hostile text as text and tags the origin of each version", () => {
+    seq = 0;
+    const evil = "<img src=x onerror=alert(1)>";
+    const c = dreamChanges([ev("dream.write", 1, { path: "a.md", version: 1, content: evil, kind: "create" })]);
+    expect(c[0]!.after).toBe(evil);
+    const v = memoryVersions(dreamLog());
+    expect(v.map((x) => [x.version, x.dream])).toEqual([[1, false], [1, false], [2, true], [2, true], [1, true], [3, false], [4, true]]);
+  });
+  it("counts dream changes as memory ticks and describes every dream event", () => {
+    expect(derive(dreamLog()).memoryTicks).toEqual([2, 4, 5, 8]);
+    for (const t of ["dream.start", "dream.call", "dream.summary", "dream.write", "dream.delete", "dream.reject", "dream.end", "fork.start"]) {
+      seq = 0;
+      const text = describeEvent(ev(t, 1, { path: 1, kind: null, text: "dream says hi" }));
+      expect(text).toContain(t === "fork.start" ? "forked" : "dream");
+    }
   });
 });

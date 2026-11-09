@@ -107,3 +107,24 @@ test("negative control: the canary scan does find a key that was written to a te
     expect(found).toContain(f);
   } finally { unlinkSync(f); }
 });
+
+test("the memory panel shows what the dream job changed, before and after, side by side", async ({ page }) => {
+  const s = seed();
+  await page.goto(`/runs/${s.run}`);
+  await expect(page.getByLabel("Run events")).toContainText("dream correct: notes/a.md");
+  const panel = page.getByRole("region", { name: /Dream changes/ }).or(page.locator("section[aria-labelledby='dream-h']"));
+  await expect(panel).toBeVisible();
+  const before = panel.getByLabel("notes/a.md before"), after = panel.getByLabel("notes/a.md after");
+  await expect(before).toContainText("notes v1");
+  await expect(after).toContainText("notes v2");
+  const [b, a] = [await before.boundingBox(), await after.boundingBox()];
+  expect(Math.abs(b!.y - a!.y)).toBeLessThan(4);                       // side by side on a desktop screen
+  expect(a!.x).toBeGreaterThan(b!.x);
+  // the cursor hides what has not happened yet
+  await page.getByRole("slider", { name: "Step" }).fill("3");
+  await expect(page.locator("section[aria-labelledby='dream-h']")).toHaveCount(0);
+  // the drawer tags the dream's version
+  await page.getByRole("slider", { name: "Step" }).fill("8");
+  await page.getByRole("button", { name: /notes\/a\.md/ }).click();
+  await expect(page.getByRole("dialog", { name: "notes/a.md" }).getByRole("button", { name: /v2 \(dream\)/ })).toBeVisible();
+});

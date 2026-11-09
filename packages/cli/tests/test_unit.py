@@ -356,3 +356,21 @@ def test_the_code_is_never_an_argument(tmp_path: Path) -> None:
         assert r.exit_code == 2 and "123456" not in r.output
     cmd = cli.commands["login"]  # type: ignore[attr-defined]
     assert not any(o == "--code" for p in cmd.params for o in p.opts) and any("--code-stdin" in p.opts for p in cmd.params)
+
+
+def test_dream_changes_pair_each_change_with_the_previous_file() -> None:
+    from memorylab_cli.dream import dream_changes
+
+    def ev(type_: str, step: int, **data: Any) -> dict[str, Any]:
+        return {"seq": 1, "step": step, "type": type_, "data": data}
+
+    log = [ev("mem.write", 2, path="a.md", version=1, content="one\nwrong\n"), ev("mem.write", 2, path="b.md", version=1, content="dup\n"),
+           ev("dream.start", 4, session=1),
+           ev("dream.write", 4, path="a.md", version=2, content="one\nmerged\n", kind="correct"), ev("dream.delete", 4, path="b.md", version=2, kind="prune"),
+           ev("dream.write", 4, path="global.md", version=1, content="pin", kind="promote"),
+           ev("mem.write", 5, path="a.md", version=3, content="agent"), ev("dream.start", 8, session=2),
+           ev("dream.write", 8, path="a.md", version=4, content="two", kind="correct")]
+    got = [(c.session, c.path, c.kind, c.before, c.after) for c in dream_changes(log)]
+    assert got == [(1, "a.md", "correct", "one\nwrong\n", "one\nmerged\n"), (1, "b.md", "prune", "dup\n", None),
+                   (1, "global.md", "promote", None, "pin"), (2, "a.md", "correct", "agent", "two")]
+    assert len(dream_changes(log, at_step=4)) == 3 and dream_changes(log, at_step=3) == [] and dream_changes([]) == []

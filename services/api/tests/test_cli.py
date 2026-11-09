@@ -722,3 +722,24 @@ def test_a_write_is_committed_before_the_response_reaches_the_client(live: Live,
     p = httpx.patch(f"{live.url}/api/v1/runs/{run}", json={"title": "fresh"}, headers={"authorization": f"Bearer {token}"})
     assert p.status_code == 200
     assert live.env.admin.execute("select title from public.runs where id = %s", (run,)).fetchone()["title"] == "fresh"  # type: ignore[index]
+
+
+def test_runs_dream_shows_what_the_dream_changed_side_by_side_as_safe_text(live: Live) -> None:
+    _, uid = live.login()
+    run = make_run(live, uid, "private")
+    evil = "\x1b[2J\x1b]0;pwned\x07 changed"
+    def mem(etype: str, at: int, /, **d: Any) -> tuple[str, int, dict[str, Any]]:
+        return (etype, at, d)
+
+    append(live, run, [("run.state", 0, {"state": "queued"}),
+                       mem("mem.write", 2, path="a.md", version=1, step=2, rev=1, chars=3, content="old note", created=True, diff="", after_sha256="f" * 64),
+                       mem("dream.start", 4, session=1),
+                       mem("dream.write", 4, path="a.md", version=2, step=4, rev=2, chars=len(evil), content=evil, kind="correct", diff="", after_sha256="f" * 64),
+                       mem("dream.end", 4, changes=1)])
+    data = json.loads(live.run("runs", "dream", run, "--json").output)
+    assert [(c["path"], c["kind"], c["before"], c["session"]) for c in data] == [("a.md", "correct", "old note", 1)] and data[0]["after"] == evil
+    human = live.run("runs", "dream", run)
+    assert human.exit_code == 0 and "old note" in human.output and "before" in human.output and "after" in human.output
+    assert "\x1b" not in human.output and "\x07" not in human.output
+    assert json.loads(live.run("runs", "dream", run, "--at-step", "3", "--json").output) == []
+    assert "no changes" in live.run("runs", "dream", make_run(live, uid, "private")).output
