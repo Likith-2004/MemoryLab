@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
-# Builds the sandbox, egress-proxy and (with --all) the service and web images. Only creates images tagged memorylab-*:dev and labelled
+# Builds the sandbox, egress-proxy and (with --all) the service and web images; `--only NAME` builds one image (worker, egress, dockerproxy,
+# ingest, api, accounts, orchestrator, reaper or web). Only creates images tagged memorylab-*:dev and labelled
 # memorylab.owner=memorylab; never touches other images on the machine.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
+only=""
+[ "${1:-}" = "--only" ] && only="${2:?image name}"
+want() { [ -z "$only" ] || [ "$only" = "$1" ]; }
 mkdir -p infra/docker/.generated
 uv export --frozen --no-dev --no-emit-workspace --package worker --format requirements-txt \
   -o infra/docker/.generated/requirements-worker.txt >/dev/null
 # memorylab.src is the hash of the worker's sources; test_docker fails when the image's label differs from the tree.
 src_hash="$(python3 scripts/image_src_hash.py)"
-docker build -q -f infra/docker/Dockerfile.worker -t memorylab-worker:dev --label memorylab.owner=memorylab --label "memorylab.src=$src_hash" .
-docker build -q -f infra/docker/Dockerfile.proxy -t memorylab-egress:dev --label memorylab.owner=memorylab .
+want worker && docker build -q -f infra/docker/Dockerfile.worker -t memorylab-worker:dev --label memorylab.owner=memorylab --label "memorylab.src=$src_hash" .
+want egress && docker build -q -f infra/docker/Dockerfile.proxy -t memorylab-egress:dev --label memorylab.owner=memorylab .
 docker image ls --filter label=memorylab.owner=memorylab --format '{{.Repository}}:{{.Tag}} {{.Size}}'
 
-[ "${1:-}" = "--all" ] || exit 0
+[ "${1:-}" = "--all" ] || [ -n "$only" ] || exit 0
 # Service images for infra/compose.yaml: name, workspace package, local packages to install (in dependency order), target.
 build_service() {
   local name="$1" pkg="$2" pkgs="$3" target="$4"
+  want "$name" || return 0
   uv export --frozen --no-dev --no-emit-workspace --package "$pkg" --format requirements-txt \
     -o "infra/docker/.generated/requirements-$pkg.txt" >/dev/null
   docker build -q -f infra/docker/Dockerfile.service --target "$target" --build-arg "SERVICE=$pkg" --build-arg "PKGS=$pkgs" \
@@ -29,5 +34,5 @@ build_service accounts accounts "packages/runlog packages/labharness services/in
 build_service orchestrator orchestrator "packages/runlog packages/labharness services/ingest services/orchestrator" with-docker
 # The reaper is the orchestrator package's second process (python -m orchestrator.reaper) without the Docker CLI.
 build_service reaper orchestrator "packages/runlog packages/labharness services/ingest services/orchestrator" plain
-docker build -q -f infra/docker/Dockerfile.web -t memorylab-web:dev --label memorylab.owner=memorylab apps/web
+want web && docker build -q -f infra/docker/Dockerfile.web -t memorylab-web:dev --label memorylab.owner=memorylab apps/web
 docker image ls --filter label=memorylab.owner=memorylab --format '{{.Repository}}:{{.Tag}} {{.Size}}'
