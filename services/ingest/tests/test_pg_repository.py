@@ -75,7 +75,7 @@ def test_save_and_get_round_trip_and_final_state_closes_the_run_row(
         repo: PostgresRunRepository, make_run: Any, admin: psycopg.Connection[dict[str, Any]]) -> None:
     rid = make_run()
     rec = RunRecord(rid, status="running", next_batch_no={"worker": 4, "orchestrator": 2}, event_count=7, bytes_total=99,
-                    frames=2, tokens=500, steps=6, score=3, last_ack={"worker": {"batch_no": 3, "accepted": 2}})
+                    frames=2, checkpoints=5, tokens=500, steps=6, score=3, last_ack={"worker": {"batch_no": 3, "accepted": 2}})
     repo.save(rec)
     assert repo.get(rid) == rec
     row = admin.execute("select status, steps, tokens, started_at, ended_at from public.runs where id = %s", (rid,)).fetchone()
@@ -187,3 +187,18 @@ def test_a_rejected_batch_leaves_no_rows_behind(pg: Env, admin: psycopg.Connecti
     assert again.status_code == 200
     n = admin.execute("select count(*) n from public.run_events_index where run_id = %s", (rid,)).fetchone()["n"]  # type: ignore[index]
     assert n == before + 1
+
+
+def test_checkpoints_are_rows_and_a_forks_parent_is_found_through_the_database_link(
+        repo: PostgresRunRepository, make_run: Any, admin: psycopg.Connection[dict[str, Any]]) -> None:
+    from ingest.repository import ParentRef
+    parent, child = make_run(), make_run()
+    cid = repo.add_checkpoint(parent, {"step": 7, "savestate_key": f"runs/{parent}/checkpoints/0000007.state", "memory_version": 3,
+                                       "transcript_offset": 42, "config_hash": "e" * 64})
+    row = admin.execute("select step, savestate_key, memory_version, transcript_offset, config_hash from public.checkpoints where id = %s",
+                        (cid,)).fetchone()
+    assert row == {"step": 7, "savestate_key": f"runs/{parent}/checkpoints/0000007.state", "memory_version": 3, "transcript_offset": 42,
+                   "config_hash": "e" * 64}
+    assert repo.parent_of(child) is None and repo.parent_of(str(uuid.uuid4())) is None
+    admin.execute("update public.runs set parent_checkpoint_id = %s where id = %s", (cid, child))
+    assert repo.parent_of(child) == ParentRef(parent, 7, 42, str(cid))

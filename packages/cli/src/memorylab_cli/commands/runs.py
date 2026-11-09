@@ -11,6 +11,7 @@ from typing import Any
 import click
 
 from ..app import App, F, build, json_option
+from ..dream import dream_changes
 from ..errors import CliError
 from ..render import safe
 from ..secrets import Secret, read_secret
@@ -218,6 +219,34 @@ def runs_events(run_id: str, after_seq: int, limit: int, all_pages: bool, as_jso
             app.out.line(f"{e['seq']:>6} step {e['step']:>5} {e['type']:<14} {json.dumps(e['data'], sort_keys=True)[:200]}")
 
     app.out.data(events, human)
+
+
+@runs.command("dream")
+@click.argument("run_id")
+@click.option("--at-step", type=click.IntRange(min=0), default=None, help="Only changes made by this step.")
+@json_option
+def runs_dream(run_id: str, at_step: int | None, as_json: bool) -> None:
+    """What the dream job changed between sessions, before and after, side by side."""
+    app = build(as_json)
+    events: list[dict[str, Any]] = []
+    after = 0
+    while True:
+        page = app.api.get(f"/runs/{run_id}/events", params={"after_seq": after, "limit": 1000}, auth=_has_session(app))
+        events += page["events"]
+        if len(page["events"]) < 1000:
+            break
+        after = page["next_after_seq"]
+    changes = dream_changes(events, at_step)
+
+    def human() -> None:
+        if not changes:
+            app.out.line("The dream job made no changes.")
+        for c in changes:
+            app.out.line(f"session {c.session}  step {c.step}  {c.kind}  {c.path}  v{c.version}")
+            app.out.table("", ["before", "after"], [[c.before if c.before is not None else "(did not exist)",
+                                                     c.after if c.after is not None else "(deleted)"]])
+
+    app.out.data([c.to_json() for c in changes], human)
 
 
 @runs.command("checkpoints")

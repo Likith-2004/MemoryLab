@@ -44,6 +44,11 @@ def all_tool_schemas(memory: MemoryConfig) -> tuple[ToolSchema, ...]:
     return tuple(game_tool_schemas() + mem)
 
 
+def memory_only_schemas(memory: MemoryConfig) -> tuple[ToolSchema, ...]:
+    """What the dream job sees: the memory tools and nothing else (no game tool exists in its schema)."""
+    return tuple(ToolSchema(t["name"], t["description"], t["input_schema"]) for t in memory_tool_schemas(memory))
+
+
 def action_from_call(name: str, args: dict[str, Any]) -> Action:
     """Build a validated game action from a model tool call (closed schema; extra keys fail)."""
     if "tool" in args:

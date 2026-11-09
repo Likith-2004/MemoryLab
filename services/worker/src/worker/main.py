@@ -18,10 +18,11 @@ from typing import Any, TextIO
 
 import httpx
 from labharness import Limits, Session, load_bundle
-from labharness.agent import AgentLoop
+from labharness.agent import AgentLoop, ResumeState
 from labharness.presets import custom_preset, get_preset
 from labharness.providers import FakeProvider, Provider, ProviderError, ScriptedStep, Usage
 from labharness.providers.anthropic import AnthropicProvider
+from labharness.sessions import checkpoint_from_event
 from runlog.client import HttpEventSink, IngestRejected, IngestUnavailable, RedactingSink
 from runlog.redaction import Redactor, ScrubFilter
 
@@ -45,6 +46,21 @@ def make_provider(job: Job, proxy: str | None) -> Provider:
     return FakeProvider(steps, job.config.model_id)
 
 
+def load_resume(job: Job, http_sink: HttpEventSink) -> ResumeState:
+    """A forked run's starting point, fetched from ingest (which knows the parent only through the database link the API created)."""
+    payload, state = http_sink.fetch_parent()
+    try:
+        cp = checkpoint_from_event(payload["checkpoint"], state)
+        events = tuple((str(m["type"]), int(m["step"]), dict(m["data"])) for m in payload["memory_events"])
+        parent_id = str(payload["parent_run_id"])
+        context = dict(payload["context"])
+    except (KeyError, TypeError, ValueError):
+        raise IngestRejected("malformed parent checkpoint") from None
+    if job.parent is not None and (parent_id != job.parent["run_id"] or cp.step != job.parent["step"]):
+        raise IngestRejected("the parent checkpoint is not the one this run was started from")
+    return ResumeState(cp, context, events, parent_id, {})
+
+
 def run_job(job: Job, *, stop: threading.Event, out: Callable[[dict[str, Any]], None],
             http_client: httpx.Client | None = None, games_dir: Path | None = None) -> dict[str, Any]:
     """Run one job to its end and return the summary. Everything leaving the process (events, frames,
@@ -57,10 +73,12 @@ def run_job(job: Job, *, stop: threading.Event, out: Callable[[dict[str, Any]], 
     game = load_bundle((games_dir or GAMES_DIR) / job.game)
     preset = custom_preset(job.preset_text or "") if job.config.preset_ref.startswith("custom@") else get_preset(job.config.preset_ref)
     provider = make_provider(job, job.proxy)
+    resume = load_resume(job, http_sink) if job.parent is not None else None
     try:
         with Session(game, Limits(), job.config.screenshots) as session:
             loop = AgentLoop(session, provider, job.config, preset, sink, run_id=job.run_id, stop=stop,
-                             content_filter=redactor.text, frame_sink=http_sink.upload_frame)
+                             content_filter=redactor.text, frame_sink=http_sink.upload_frame, resume=resume,
+                             checkpoint_sink=lambda cp, ctx: http_sink.upload_checkpoint(cp, redactor.obj(ctx)))
             result = loop.run()
         http_sink.flush()
     finally:
@@ -79,12 +97,15 @@ def _heartbeat(period: float, out: Callable[[dict[str, Any]], None], done: threa
 
 
 def _control(stdin: TextIO, stop: threading.Event) -> None:
-    for line in iter(lambda: stdin.readline(MAX_LINE), ""):
-        try:
-            if json.loads(line).get("cmd") == "stop":
-                stop.set()
-        except (ValueError, AttributeError):
-            continue  # ignore junk; never echo it
+    try:
+        for line in iter(lambda: stdin.readline(MAX_LINE), ""):
+            try:
+                if json.loads(line).get("cmd") == "stop":
+                    stop.set()
+            except (ValueError, AttributeError):
+                continue  # ignore junk; never echo it
+    except (ValueError, OSError):
+        return          # the stream was closed under us (the process is ending)
 
 
 def main(stdin: TextIO | None = None, stdout: TextIO | None = None, *, http_client: httpx.Client | None = None,
@@ -109,7 +130,8 @@ def main(stdin: TextIO | None = None, stdout: TextIO | None = None, *, http_clie
     del raw
     stop, done = threading.Event(), threading.Event()
     threading.Thread(target=_control, args=(stdin, stop), daemon=True).start()
-    threading.Thread(target=_heartbeat, args=(job.heartbeat_s, out, done), daemon=True).start()
+    beat = threading.Thread(target=_heartbeat, args=(job.heartbeat_s, out, done), daemon=True)
+    beat.start()
     try:
         summary = run_job(job, stop=stop, out=out, http_client=http_client, games_dir=games_dir)
     except (IngestRejected, IngestUnavailable) as exc:
@@ -120,6 +142,7 @@ def main(stdin: TextIO | None = None, stdout: TextIO | None = None, *, http_clie
         return 1
     finally:
         done.set()
+        beat.join(timeout=5)     # no heartbeat may be mid-write when the caller closes stdout (it raised "I/O operation on closed file")
     out({"done": summary})
     return 0
 

@@ -151,16 +151,12 @@ class Orchestrator:
         """Validate and queue. Raises SubmitError (422) or AdmissionError (429/503/409). The key is
         held in a KeyBox: memory only, never written anywhere. Idempotent per run_id: a repeat returns the
         current status and queues nothing."""
-        if sub.parent is not None:
-            # The worker cannot yet start a job from a checkpoint (Session.restore exists, the job spec and the
-            # worker do not use it). Refuse loudly: running a fork from step 0 would silently be a different run.
-            raise SubmitError("validation_failed", "starting from a checkpoint is not implemented in the worker yet")
         config, preset_text, key, script = self._validate(sub)
         box = KeyBox(key) if key is not None else KeyBox(SecretKey("placeholder-unused-key"))
         if key is None:
             box.discard()
         req = RunRequest(sub.run_id, sub.user_id, sub.ip_hash, sub.game, config, preset_text,
-                         str(sub.provider["name"]), box, script, self._clock())
+                         str(sub.provider["name"]), box, script, self._clock(), sub.parent)
         try:
             position = self.scheduler.submit(req)
         except Duplicate:
@@ -220,7 +216,8 @@ class Orchestrator:
             config: RunConfig = req.run_config
             preset = custom_preset(req.preset_text or "") if config.preset_ref.startswith("custom@") else get_preset(config.preset_ref)
             manifest = build_manifest(run_id=req.run_id, config=config, bundle=game, preset=preset,
-                                      pyboy_version=PINNED_PYBOY, max_total_frames=Limits().max_total_frames)
+                                      pyboy_version=PINNED_PYBOY, max_total_frames=Limits().max_total_frames,
+                                      parent=req.parent)
             api.put_manifest(manifest)                                   # sealed before step 1
             argv = dockercmd.build_run_command(self.cfg, req.run_id)
             proc = self._launcher(argv)
@@ -261,6 +258,8 @@ class Orchestrator:
                "ingest": {"url": self.cfg.sandbox_ingest_url, "proxy": self.cfg.proxy_url,
                           "token": api.worker_token(int(caps.max_wall_s + self.cfg.wall_grace_s + 600))},
                "provider": provider, "heartbeat_s": self.cfg.heartbeat_period_s}
+        if req.parent is not None:
+            job["parent"] = req.parent
         return json.dumps(job, separators=(",", ":")).encode()
 
     def _finalize(self, api: IngestApi, req: RunRequest, result: SandboxResult) -> None:

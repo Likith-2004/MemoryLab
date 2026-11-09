@@ -117,7 +117,7 @@ class ForkIn(Body):
 
 # the top-level fields of a run configuration: an experiment's variable is one of them
 EXPERIMENT_VARIABLES = frozenset({"provider", "model_id", "preset_ref", "memory", "inject_path", "inject_cap_chars",
-                                  "observation", "screenshots", "caps", "mode"})
+                                  "observation", "screenshots", "caps", "sessions", "mode"})
 
 
 class ExperimentIn(Body):
@@ -427,6 +427,11 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
         return [{"id": p.id, "version": p.version, "ref": p.ref, "text": p.text, "text_sha256": p.text_sha256,
                  "label": p.label, "is_adaptation": p.is_adaptation} for p in PRESETS.values()]
 
+    @app.get(f"{API}/features", dependencies=[Guard])
+    def features() -> dict[str, bool]:
+        """What this deployment has switched on, so a client can hide what would only be refused."""
+        return {"fork": settings.fork_enabled}
+
     @app.get(f"{API}/models", dependencies=[Guard])
     def models() -> dict[str, Any]:
         return {"providers": {k: list(v) for k, v in PROVIDER_MODELS.items()},
@@ -552,8 +557,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     def fork_run(user: Authed, run: Run, body: ForkIn, request: Request, conn: Sess) -> dict[str, Any]:
         """A new run that starts from one of this run's checkpoints, with its config changed by `config_patch`.
         The caller must be able to see the run; the checkpoint must belong to it (same 404 as a missing one); the
-        parent checkpoint is set here, never taken from the body. Disabled by default: the orchestrator would refuse the
-        submit after the quota and key check were spent."""
+        parent checkpoint is set here, never taken from the body. Disabled by default: kept as an operator switch (MEMORYLAB_FORK_ENABLED=0)."""
         if not settings.fork_enabled:
             raise ApiError(422, "validation_failed", "forking is not available yet")
         ip = _ip_hash(client_ip(request), salt)
@@ -636,6 +640,14 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
             raise ApiError(503, "internal", "event store unavailable")
         page = EventLogReader(store, run["id"]).read_page(after_seq, limit)
         return {"events": [e.to_obj() for e in page], "next_after_seq": page[-1].seq if page else after_seq}
+
+    @app.get(API + "/runs/{run_id}/config", dependencies=[Guard])
+    def run_config_view(run: Run, conn: Sess) -> dict[str, Any]:
+        """The configuration a run was started with (what a fork starts from). Same visibility as the run."""
+        row = conn.execute("select config_json, config_hash, mode from api_private.run_config(%s)", (run["id"],)).fetchone()
+        if row is None:
+            raise NotFound
+        return {"config": row["config_json"], "config_hash": row["config_hash"], "mode": row["mode"]}
 
     @app.get(API + "/runs/{run_id}/score", dependencies=[Guard])
     def score(run: Run, conn: Sess) -> dict[str, Any]:

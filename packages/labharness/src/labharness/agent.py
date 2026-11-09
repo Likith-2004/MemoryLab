@@ -29,17 +29,32 @@ from .prompt import (
     system_blocks,
 )
 from .providers.base import (
+    Message,
     Provider,
     ProviderError,
     ProviderRequest,
     ProviderResult,
+    SystemBlock,
+    TextBlock,
     ToolCall,
     ToolResultBlock,
 )
 from .screenshots import ScreenshotPolicy
-from .session import Session, Trace
+from .session import Checkpoint, Session, Trace
+from .sessions import (
+    DREAM_PROMPT,
+    DREAM_PROMPT_SHA256,
+    ResumeState,
+    SessionsConfig,
+    classify_change,
+    context_has_image,
+    dream_input,
+    restore_context,
+    serialize_context,
+    transcript_line,
+)
 from .telemetry import Snapshot
-from .tools import GAME_TOOLS, action_from_call, all_tool_schemas
+from .tools import GAME_TOOLS, action_from_call, all_tool_schemas, memory_only_schemas
 
 MAX_ARGS_ECHO = 300
 
@@ -78,12 +93,15 @@ class RunConfig:
     screenshots: ScreenshotPolicy = field(default_factory=ScreenshotPolicy)
     caps: Caps = field(default_factory=Caps)
     mode: str = "demo"
+    sessions: SessionsConfig = field(default_factory=SessionsConfig)
 
     def __post_init__(self) -> None:
         if self.mode not in ("demo", "benchmark"):
             raise ValueError("mode must be demo or benchmark")
         if not self.memory.enabled and self.preset_ref != "none@1" and not self.preset_ref.startswith("custom@"):
             raise ValueError("the no-memory arm must use the 'none' preset")
+        if self.sessions.dream and not self.memory.enabled:
+            raise ValueError("the dream job needs memory to be enabled")
         if isinstance(self.inject_cap_chars, bool) or not 1 <= self.inject_cap_chars <= 8192:
             raise ValueError("inject_cap_chars must be in 1..8192")
         try:
@@ -92,13 +110,16 @@ class RunConfig:
             raise ValueError(f"inject_path: {exc.detail}") from None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if self.sessions.is_default:
+            del d["sessions"]       # an absent block and an explicit default are the same config (and the same hash)
+        return d
 
     @classmethod
     def from_dict(cls, doc: object) -> RunConfig:
         """Strict inverse of `to_dict` for untrusted input: closed key sets, exact types."""
         d = _closed(doc, "run_config", {"provider", "model_id", "preset_ref", "mode"},
-                    {"memory", "inject_path", "inject_cap_chars", "observation", "screenshots", "caps"})
+                    {"memory", "inject_path", "inject_cap_chars", "observation", "screenshots", "caps", "sessions"})
         for key in ("provider", "model_id", "preset_ref", "mode"):
             if not isinstance(d[key], str):
                 raise ValueError(f"run_config.{key} must be a string")  # noqa: TRY004
@@ -118,6 +139,9 @@ class RunConfig:
             kwargs["caps"] = Caps(**_closed(d["caps"], "caps", set(), {
                 "max_steps", "max_tokens", "max_wall_s", "max_output_tokens", "max_tool_calls_per_step",
                 "context_steps", "call_timeout_s"}))
+        if "sessions" in d:
+            kwargs["sessions"] = SessionsConfig(**_closed(d["sessions"], "sessions", set(), {
+                "session_len", "dream", "dream_max_tokens", "dream_max_turns", "checkpoint_every"}))
         for key in ("inject_path", "inject_cap_chars"):
             if key in d:
                 kwargs[key] = d[key]
@@ -176,6 +200,8 @@ class AgentLoop:
         clock: Callable[[], float] = time.monotonic,
         content_filter: Callable[[str], str] | None = None,
         frame_sink: Callable[[int, bytes], None] | None = None,
+        checkpoint_sink: Callable[[Checkpoint, dict[str, Any]], None] | None = None,
+        resume: ResumeState | None = None,
     ) -> None:
         if preset.ref != config.preset_ref:
             raise ValueError("preset does not match the run config")
@@ -183,6 +209,10 @@ class AgentLoop:
         self.stop = stop or threading.Event()
         self.clock = clock
         self.memory = MemoryService(MemoryStore(run_id), config.memory, content_filter)
+        self.resume = resume
+        self.run_id = run_id
+        if resume is not None:
+            self._replay_parent_memory(resume)
         self.context = ContextBuilder(config.caps.context_steps)
         self.detectors = DetectorSet()
         self.tools = all_tool_schemas(config.memory)
@@ -192,6 +222,14 @@ class AgentLoop:
         self._last_inject_sha: str | None = None
         self._entries: list[dict[str, Any]] = []
         self._frame_sink = frame_sink  # (step, PNG bytes) for frames the screenshot policy captured
+        self._checkpoint_sink = checkpoint_sink  # (Checkpoint, context document): stores the state blob and context for a later fork
+        self._session_no = 1
+        self._last_boundary_step = -1
+        self._last_checkpoint_step = -1
+        self._transcript: list[str] = []
+        self._last_obs_text = ""
+        self._last_obs_png: bytes | None = None
+        self.dream_tokens = 0
 
     # ---- events ---------------------------------------------------------------------------
     def _emit(self, type_: str, step: int, data: dict[str, Any]) -> None:
@@ -203,6 +241,8 @@ class AgentLoop:
     def run(self) -> RunResult:
         started = self.clock()
         self._emit("run.state", 0, {"state": "running"})
+        if self.resume is not None:
+            self._announce_resume(self.resume)
         try:
             state, reason = self._run_steps(started)
         except ProviderError as exc:
@@ -223,12 +263,27 @@ class AgentLoop:
         return RunResult(state, reason, self.session.step, self.tokens, wall, trace)
 
     def _run_steps(self, started: float) -> tuple[str, str]:
-        rec = self.session.open()
-        self._record_obs(rec)
+        if self.resume is None:
+            rec = self.session.open()
+            self._record_obs(rec)
+        else:
+            has_image = context_has_image(self.resume.context)
+            rec = self.session.open_from(self.resume.checkpoint, force_frame=has_image)
+            self._record_obs(rec, begin_context=False)
+            self._transcript = restore_context(self.resume.context, self.context, rec.frame_png)
+            self._session_no = int(self.resume.context.get("session_no", 1))
+            self._last_checkpoint_step = rec.step
+            if self.resume.context.get("boundary"):
+                self._last_boundary_step = rec.step      # the checkpoint IS the post-boundary state: do not run the boundary again
         while True:
             cap = self._check_stop(started)
             if cap is not None:
                 return cap
+            if self._boundary_due():
+                self._boundary(started)
+                cap = self._check_stop(started)          # the dream's spend or time may have crossed a cap
+                if cap is not None:
+                    return cap
             step_no = self.session.step + 1
             request = self._build_request(step_no, started)
             result = self.provider.step(request)
@@ -236,7 +291,9 @@ class AgentLoop:
             results, executed = self._execute(result, step_no)
             rec = self.session.finish_step(executed)
             self.context.finish(result.raw_assistant, results)
+            self._note_step(step_no, result, results, rec)
             self._record_obs(rec)
+            self._maybe_checkpoint()
 
     def _check_stop(self, started: float) -> tuple[str, str] | None:
         caps = self.config.caps
@@ -337,7 +394,7 @@ class AgentLoop:
         return ToolResultBlock(call.id, result_text({"ok": True, "frames": frames}), False)
 
     # ---- observation -----------------------------------------------------------------------------------
-    def _record_obs(self, rec: Any) -> None:
+    def _record_obs(self, rec: Any, begin_context: bool = True) -> None:
         snap: Snapshot = rec.snapshot
         prev = self._last_snapshot
         changed = prev is None or _core(prev) != _core(snap)
@@ -351,7 +408,156 @@ class AgentLoop:
         })
         if rec.frame_png is not None and self._frame_sink is not None:
             self._frame_sink(rec.step, rec.frame_png)
-        self.context.begin(format_observation(rec.step, snap, self.config.observation), rec.frame_png)
+        self._last_obs_text = format_observation(rec.step, snap, self.config.observation)
+        self._last_obs_png = rec.frame_png
+        if begin_context:
+            self.context.begin(self._last_obs_text, rec.frame_png)
+
+    # ---- sessions, the dream job, checkpoints -----------------------------------------------------------------
+    def _note_step(self, step_no: int, result: ProviderResult, results: list[ToolResultBlock], rec: Any) -> None:
+        snap: Snapshot = rec.snapshot
+        calls = [(c.name, c.input, r.content) for c, r in zip(result.actions, results, strict=False)]
+        self._transcript.append(transcript_line(step_no, result.summary, calls, f"map {snap.map_id} ({snap.x},{snap.y})"))
+        del self._transcript[:-400]            # bounded; the dream sees the tail that fits its input
+
+    def _boundary_due(self) -> bool:
+        n = self.config.sessions.session_len
+        step = self.session.step
+        return n is not None and step > 0 and step % n == 0 and step != self._last_boundary_step
+
+    def _boundary(self, started: float) -> None:
+        """End a session: context dropped, emulator and memory kept, optional dream, then a checkpoint of exactly that state."""
+        step = self.session.step
+        self._last_boundary_step = step
+        number = self._session_no
+        self._emit("run.state", step, {"state": "session_boundary"})
+        self._emit("session.boundary", step, {
+            "session": number, "next_session": number + 1, "context_steps_dropped": len(self.context.steps),
+            "inject_path": self.config.inject_path, "memory_rev": self.memory.store.rev})
+        if self.config.sessions.dream and self.config.memory.enabled and self.tokens < self.config.caps.max_tokens:
+            self._emit("run.state", step, {"state": "dreaming"})
+            self._dream(number, started)
+        self.context = ContextBuilder(self.config.caps.context_steps)      # the model forgets; only the pinned file survives
+        self.context.begin(self._last_obs_text, self._last_obs_png)
+        self._last_inject_sha = None                                       # the new session's injected notes are logged afresh
+        self._session_no += 1
+        self._transcript.clear()                                           # the next session starts with an empty transcript
+        self._take_checkpoint("boundary")
+        self._emit("run.state", step, {"state": "running"})
+
+    def _dream(self, session_no: int, started: float) -> None:
+        """One dream job: a few provider calls that may only use the memory tools. Own token cap; its spend counts against the run's."""
+        cfg, caps = self.config.sessions, self.config.caps
+        step = self.session.step
+        rev_before = self.memory.store.rev
+        live = {p: r.content for p, r in self.memory.store.live().items()}
+        self._emit("dream.start", step, {
+            "session": session_no, "budget_tokens": cfg.dream_max_tokens, "max_turns": cfg.dream_max_turns, "memory_rev": rev_before,
+            "files": len(live), "prompt_version": "dream@1", "prompt_sha256": DREAM_PROMPT_SHA256})
+        messages: list[Message] = [Message("user", (TextBlock(dream_input(
+            self._transcript, live, self.config.inject_path, self.config.inject_cap_chars, rev_before)),))]
+        spent = turns = changes = 0
+        stopped = ""
+        while turns < cfg.dream_max_turns:
+            remaining_run = caps.max_tokens - self.tokens
+            remaining_dream = cfg.dream_max_tokens - spent
+            if self.stop.is_set():
+                stopped = "stop"
+            elif remaining_dream <= 0:
+                stopped = "dream_tokens"
+            elif remaining_run <= 0:
+                stopped = "run_tokens"
+            elif self.clock() - started >= caps.max_wall_s:
+                stopped = "wall"
+            if stopped:
+                break
+            request = ProviderRequest(
+                system=(SystemBlock(DREAM_PROMPT, cache=True),), messages=tuple(messages), tools=memory_only_schemas(self.config.memory),
+                # a call may not be allowed to overrun what is left of either budget (the run cap is hard, the dream cap is the dream's own)
+                max_output_tokens=min(caps.max_output_tokens, remaining_dream, remaining_run),
+                timeout_s=max(1.0, min(caps.call_timeout_s, caps.max_wall_s - (self.clock() - started))))
+            result = self.provider.step(request)
+            turns += 1
+            used = result.usage.total
+            spent += used
+            self.tokens += used
+            self.dream_tokens += used
+            self._emit("dream.call", step, {
+                "turn": turns, "usage": {"input_tokens": result.usage.input_tokens, "output_tokens": result.usage.output_tokens},
+                "dream_tokens": spent, "tokens_total": self.tokens, "request_id": result.request_id, "stop_reason": result.stop_reason})
+            if result.summary:
+                self._emit("dream.summary", step, {"text": result.summary[:MAX_SUMMARY_CHARS]})
+            if not result.actions:
+                break
+            answers: list[ToolResultBlock] = []
+            for index, call in enumerate(result.actions):
+                if index >= caps.max_tool_calls_per_step:
+                    answers.append(self._skip(call, "too many tool calls in one turn"))
+                elif call.name in TOOL_NAMES:
+                    outcome = self.memory.dispatch(call.name, call.input, step)
+                    for event in outcome.events:
+                        changes += self._emit_dream_event(event.type, event.data, step)
+                    answers.append(ToolResultBlock(call.id, result_text(outcome.result), not outcome.ok))
+                else:
+                    # a dream can reach memory and nothing else: a game tool (or anything unknown) is refused and the emulator is not touched
+                    self._emit("dream.reject", step, {"op": "unknown", "reason": "not_a_memory_tool", "tool": safe_echo(call.name)})
+                    answers.append(ToolResultBlock(call.id, result_text({"ok": False, "error": "not_a_memory_tool"}), True))
+            messages += [Message("assistant", result.raw_assistant), Message("user", tuple(answers))]
+        if stopped in ("dream_tokens", "run_tokens"):
+            # the dream was cut short rather than allowed to overrun: recorded as a cap hit with reason `dream`
+            self._emit("cap.hit", step, {"cap": "dream", "limit": cfg.dream_max_tokens if stopped == "dream_tokens" else caps.max_tokens,
+                                         "value": spent if stopped == "dream_tokens" else self.tokens, "reason": stopped})
+        self._emit("dream.end", step, {"session": session_no, "turns": turns, "dream_tokens": spent, "changes": changes,
+                                       "cut_short": stopped or None, "memory_rev_before": rev_before, "memory_rev_after": self.memory.store.rev})
+
+    def _emit_dream_event(self, mem_type: str, data: dict[str, Any], step: int) -> int:
+        """Re-badge a memory event as the dream's own. Returns 1 if it changed memory."""
+        name = {"mem.write": "dream.write", "mem.delete": "dream.delete", "mem.reject": "dream.reject", "mem.read": "dream.read"}[mem_type]
+        extra: dict[str, Any] = {}
+        if name in ("dream.write", "dream.delete"):
+            extra["kind"] = classify_change("delete" if name == "dream.delete" else "write", data["path"], self.config.inject_path,
+                                            bool(data.get("created")))
+        self._emit(name, step, {**data, **extra})
+        return 1 if name in ("dream.write", "dream.delete") else 0
+
+    def _maybe_checkpoint(self) -> None:
+        n = self.config.sessions.checkpoint_every
+        step = self.session.step
+        s = self.config.sessions.session_len
+        if n is None or step % n != 0 or step == self._last_checkpoint_step or (s is not None and step % s == 0):
+            return                          # a boundary step is checkpointed by the boundary (after the dream), not here
+        self._take_checkpoint("interval")
+
+    def _take_checkpoint(self, reason: str) -> None:
+        if self.session.step == self._last_checkpoint_step:
+            return
+        cp = self.session.checkpoint()
+        self._last_checkpoint_step = cp.step
+        context = serialize_context(self.context.steps, self.config.caps.context_steps, transcript=self._transcript,
+                                    session_no=self._session_no, boundary=reason == "boundary")
+        if self._checkpoint_sink is not None:
+            self._checkpoint_sink(cp, context)          # state blob and context are stored BEFORE the event that announces them
+        self._emit("checkpoint", cp.step, {
+            "step": cp.step, "reason": reason, "session": self._session_no, "memory_rev": self.memory.store.rev,
+            "state_sha256": cp.state_sha256, "frames": cp.frames, "tracker": cp.tracker, "snapshot_sha256": cp.snapshot_sha256,
+            "ram_sha256": cp.ram_sha256, "rom_sha256": cp.rom_sha256, "semantics_sha256": cp.semantics_sha256,
+            "pyboy_version": cp.pyboy_version, "config_hash": self.config.config_hash, "trace_len": len(self._entries)})
+
+    # ---- resuming from a parent's checkpoint ---------------------------------------------------------------------
+    def _replay_parent_memory(self, resume: ResumeState) -> None:
+        """Seed the store by replaying the parent's memory mutations in order: revs and versions come out identical."""
+        for _type, _step, data in resume.memory_events:
+            deleted = _type in ("mem.delete", "dream.delete")
+            row = self.memory.store.append(str(data["path"]), int(data["step"]), "" if deleted else str(data["content"]), deleted)
+            if row.rev != data["rev"] or row.version != data["version"]:
+                raise ValueError("the parent's memory log is inconsistent")
+
+    def _announce_resume(self, resume: ResumeState) -> None:
+        step = resume.checkpoint.step
+        self._emit("fork.start", step, {"parent_run_id": resume.parent_run_id, "parent_step": step, "session": resume.context.get("session_no", 1),
+                                        "memory_rev": self.memory.store.rev, "context_restored": True})
+        for type_, _step, data in resume.memory_events:   # the child's own log carries the history, so replay and verification stand alone
+            self._emit(type_, int(data["step"]), {**data, "seeded_from": resume.parent_run_id})
 
 
-__all__ = ["AgentLoop", "Caps", "EventSink", "ListSink", "RunConfig", "RunResult"]
+__all__ = ["AgentLoop", "Caps", "EventSink", "ListSink", "ResumeState", "RunConfig", "RunResult", "SessionsConfig"]

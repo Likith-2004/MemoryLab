@@ -1,5 +1,6 @@
 """Ingest business logic: authenticate, validate, redact, append, index, quota, close."""
 
+import hashlib
 import io
 import json
 import threading
@@ -10,14 +11,14 @@ from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 from runlog.bundle import ExportRefused, build_export
-from runlog.eventlog import EventLogWriter
-from runlog.events import EventRejected, validate_payload
+from runlog.eventlog import EventLogReader, EventLogWriter
+from runlog.events import MEM_DELETE_TYPES, MEM_WRITE_TYPES, EventRejected, validate_payload
 from runlog.lifecycle import FINAL, check_transition
 from runlog.manifest import ManifestSealed, seal_manifest
 from runlog.redaction import Redactor, scan_text
-from runlog.store import AlreadyExists, ObjectStore
+from runlog.store import AlreadyExists, NotFound, ObjectStore
 
-from .repository import RunRecord, RunRepository
+from .repository import ParentRef, RunRecord, RunRepository
 from .tokens import Claims, TokenError, verify_token
 
 ORCHESTRATOR_TYPES = frozenset({"run.state", "error"})
@@ -71,7 +72,11 @@ class Limits:
     max_frames_per_run: int = 3000
     max_frame_bytes: int = 256 * 1024
     max_manifest_bytes: int = 64 * 1024
-    max_body_bytes: int = 1024 * 1024
+    max_body_bytes: int = 4 * 1024 * 1024
+    max_checkpoints_per_run: int = 200
+    max_checkpoint_state_bytes: int = 3 * 1024 * 1024
+    max_checkpoint_context_bytes: int = 1024 * 1024
+    max_parent_payload_bytes: int = 24 * 1024 * 1024
 
 
 class IngestService:
@@ -136,6 +141,8 @@ class IngestService:
                     assert isinstance(data, dict) and isinstance(type_, str) and isinstance(step, int)
                     if type_ == "run.state":
                         status = check_transition(status, data.get("state"), claims.scope)
+                    elif type_ == "checkpoint":
+                        self._check_checkpoint_event(run_id, data)
                 except EventRejected as exc:
                     raise Invalid(exc.reason) from None
                 items.append((type_, step, self.redactor.obj(data)))
@@ -144,12 +151,17 @@ class IngestService:
                 raise QuotaExceeded("byte quota for this run is used up")
             written, index = self._writer(run_id).append(items)
             for e in written:
-                if e.type == "model.call":
+                if e.type in ("model.call", "dream.call"):          # the dream job's spend counts against the run's total
                     record.tokens = int(e.data.get("tokens_total", record.tokens))
                 elif e.type == "obs":
                     record.steps = max(record.steps, e.step)
                     record.score = int(e.data.get("score", record.score))
             self.repo.add_index(run_id, index)
+            for e in written:
+                if e.type == "checkpoint":      # a row per checkpoint: forks reference it; its offset is this event's seq
+                    self.repo.add_checkpoint(run_id, {"step": e.step, "savestate_key": self._cp_key(run_id, e.step, "state"),
+                                                      "memory_version": int(e.data["memory_rev"]), "transcript_offset": e.seq,
+                                                      "config_hash": str(e.data["config_hash"])})
             rows = self._memory_rows(run_id, written)
             if rows:
                 self.repo.add_memory_rows(run_id, rows)
@@ -166,15 +178,104 @@ class IngestService:
     def _memory_rows(run_id: str, events: list[Any]) -> list[dict[str, Any]]:
         rows = []
         for e in events:
-            if e.type == "mem.write":
+            if e.type in MEM_WRITE_TYPES:                           # the agent's writes and the dream job's: one versioned store
                 d = e.data
                 rows.append({"run_id": run_id, "path": d["path"], "version": d["version"], "step": d["step"],
                              "rev": d["rev"], "content": d["content"], "chars": d["chars"], "deleted": False})
-            elif e.type == "mem.delete":
+            elif e.type in MEM_DELETE_TYPES:
                 d = e.data
                 rows.append({"run_id": run_id, "path": d["path"], "version": d["version"], "step": d["step"],
                              "rev": d["rev"], "content": "", "chars": 0, "deleted": True})
         return rows
+
+    # ---- checkpoints and forks -------------------------------------------------------------------
+    @staticmethod
+    def _cp_key(run_id: str, step: int, kind: str) -> str:
+        return f"runs/{run_id}/checkpoints/{step:07d}.{'state' if kind == 'state' else 'ctx.json'}"
+
+    def put_checkpoint_blob(self, claims: Claims, run_id: str, step: int, kind: str, data: bytes) -> None:
+        """The worker stores a checkpoint's emulator state and model context BEFORE it logs the `checkpoint` event that announces them."""
+        if claims.scope != "worker":
+            raise WrongScope("only the worker uploads checkpoints")
+        limit = self.limits.max_checkpoint_state_bytes if kind == "state" else self.limits.max_checkpoint_context_bytes
+        if kind not in ("state", "context") or not 0 <= step <= 1_000_000 or not 0 < len(data) <= limit:
+            raise Invalid("bad checkpoint step, kind or size")
+        if kind == "context":
+            try:
+                json.loads(data)
+            except ValueError:
+                raise Invalid("a checkpoint context is JSON") from None
+            if scan_text(data.decode("utf-8", "replace")):
+                raise Invalid("checkpoint context contains credential-like text")     # the same refusal as a manifest
+        with self.repo.lock(run_id):
+            record = self._record(run_id)
+            if record.closed or record.status in FINAL:
+                raise Conflict("the run has ended")
+            key = self._cp_key(run_id, step, kind)
+            known_step = self.store.exists(self._cp_key(run_id, step, "state")) or self.store.exists(self._cp_key(run_id, step, "context"))
+            if not known_step and record.checkpoints >= self.limits.max_checkpoints_per_run:
+                raise QuotaExceeded("checkpoint quota for this run is used up")      # counted per distinct step, at upload, orphans included
+            try:
+                self.store.put(key, data)
+            except AlreadyExists:
+                if self.store.get(key) != data:
+                    raise Conflict("a different checkpoint already exists for this step") from None
+                return                                                              # an idempotent re-upload costs nothing
+            if not known_step:
+                record.checkpoints += 1
+                self.repo.save(record)
+
+    def _check_checkpoint_event(self, run_id: str, data: dict[str, Any]) -> None:
+        step, sha = data.get("step"), data.get("state_sha256")
+        if isinstance(step, bool) or not isinstance(step, int) or not isinstance(sha, str) or not isinstance(data.get("config_hash"), str) \
+                or isinstance(data.get("memory_rev"), bool) or not isinstance(data.get("memory_rev"), int):
+            raise Invalid("malformed checkpoint event")
+        try:
+            blob = self.store.get(self._cp_key(run_id, step, "state"))
+            self.store.get(self._cp_key(run_id, step, "context"))
+        except NotFound:
+            raise Invalid("a checkpoint event needs its uploaded state and context") from None
+        if hashlib.sha256(blob).hexdigest() != sha:
+            raise Invalid("the checkpoint state does not match its hash")
+
+    def _parent(self, claims: Claims, run_id: str) -> ParentRef:
+        if claims.scope != "worker":
+            raise WrongScope("only the worker reads its parent checkpoint")
+        ref = self.repo.parent_of(run_id)
+        if ref is None:
+            raise UnknownRun("this run has no parent checkpoint")
+        return ref
+
+    def parent_payload(self, claims: Claims, run_id: str) -> dict[str, Any]:
+        """What a forked run starts from: the parent's `checkpoint` event, its model context, and its memory mutations up to that point."""
+        ref = self._parent(claims, run_id)
+        checkpoint: dict[str, Any] | None = None
+        memory: list[dict[str, Any]] = []
+        size = 0
+        for e in EventLogReader(self.store, ref.parent_run_id).iter_events():
+            if e.seq > ref.transcript_offset:
+                break
+            if e.type in MEM_WRITE_TYPES | MEM_DELETE_TYPES:
+                memory.append({"type": e.type, "step": e.step, "data": e.data})
+                size += len(json.dumps(e.data))
+                if size > self.limits.max_parent_payload_bytes:
+                    raise Invalid("the parent's memory history is too large to fork")
+            elif e.seq == ref.transcript_offset and e.type == "checkpoint":
+                checkpoint = e.data
+        if checkpoint is None or checkpoint.get("step") != ref.step:
+            raise UnknownRun("the parent's checkpoint is not in its log")
+        try:
+            context = json.loads(self.store.get(self._cp_key(ref.parent_run_id, ref.step, "context")))
+        except NotFound:
+            raise UnknownRun("the parent's checkpoint context is missing") from None
+        return {"parent_run_id": ref.parent_run_id, "checkpoint": checkpoint, "context": context, "memory_events": memory}
+
+    def parent_state(self, claims: Claims, run_id: str) -> bytes:
+        ref = self._parent(claims, run_id)
+        try:
+            return self.store.get(self._cp_key(ref.parent_run_id, ref.step, "state"))
+        except NotFound:
+            raise UnknownRun("the parent's checkpoint state is missing") from None
 
     # ---- frames, manifest, close -----------------------------------------------------------------
     def put_frame(self, claims: Claims, run_id: str, step: int, png: bytes) -> None:

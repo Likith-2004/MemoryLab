@@ -1,5 +1,6 @@
 """Every run-scoped route x {anon, owner, other user, admin} x {private, unlisted, public}."""
 
+import uuid
 from typing import Any
 
 import pytest
@@ -171,3 +172,20 @@ def test_catalogue_shows_only_public_games_and_presets_carry_labels(env: Env) ->
     presets = env.client.get("/api/v1/presets").json()
     assert presets and all({"text", "text_sha256", "label", "is_adaptation"} <= p.keys() for p in presets)
     assert "anthropic" in env.client.get("/api/v1/models").json()["providers"]
+
+
+@pytest.mark.parametrize("visibility", VIS)
+@pytest.mark.parametrize("who", WHO)
+def test_run_config_follows_run_visibility(env: Env, who: str, visibility: str) -> None:
+    ids = seed(env, visibility)
+    r = env.client.get(f"/api/v1/runs/{ids['run']}/config", headers=hdr(ids, who))
+    if can_see(who, visibility):
+        assert r.status_code == 200 and set(r.json()) == {"config", "config_hash", "mode"}
+    else:
+        missing = env.client.get(f"/api/v1/runs/{uuid.uuid4()}/config", headers=hdr(ids, who))
+        assert (r.status_code, r.json()) == (missing.status_code, missing.json()) == (404, missing.json())
+
+
+def test_features_reports_what_is_switched_on(make_env: Any) -> None:
+    assert make_env(fork_enabled=False).client.get("/api/v1/features").json() == {"fork": False}
+    assert make_env(fork_enabled=True).client.get("/api/v1/features").json() == {"fork": True}

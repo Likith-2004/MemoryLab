@@ -322,3 +322,90 @@ def test_a_repeated_submit_for_another_user_is_still_a_conflict(world) -> None: 
     with pytest.raises(Duplicate):
         orch.submit(submission(run_id, user="someone-else", ip="other"))
     assert orch.scheduler.snapshot()["queued"] == [run_id]
+
+
+# ---- sessions, the dream job and forking through the real orchestrator, worker and ingest ----------------------------
+def _fake_steps(n: int, *, first_mem: bool = False) -> list[dict]:  # type: ignore[type-arg]
+    out = []
+    for i in range(n):
+        calls = [["press", {"buttons": ["Right"], "hold_frames": 1}]]
+        if first_mem and i == 0:
+            calls.append(["mem_write", {"path": "notes/a.md", "content": "door at 3,3\n"}])
+        out.append({"calls": calls, "text": f"step {i + 1}", "tokens": 100})
+    return out
+
+
+def _session_config(**sessions) -> dict:  # type: ignore[no-untyped-def,type-arg]
+    from conftest import RUN_CONFIG
+    return {**RUN_CONFIG, "caps": {"max_steps": 4}, "sessions": sessions}
+
+
+def test_a_sessioned_run_with_a_dream_flows_through_worker_and_ingest(world) -> None:  # type: ignore[no-untyped-def]
+    run_id = world.register()
+    orch = world.orch()
+    script = _fake_steps(2, first_mem=True) + [
+        {"calls": [["mem_write", {"path": "global.md", "content": "pinned"}]], "text": "dreaming", "tokens": 50},
+        {"calls": [], "text": "done", "tokens": 30}] + _fake_steps(2)
+    sub = submission(run_id, run_config=_session_config(session_len=2, dream=True),
+                     provider={"name": "fake", "api_key": CANARY, "script": script})
+    go(world, orch, sub)
+    assert states(world, run_id) == [("queued", None), ("starting", None), ("running", None), ("session_boundary", None), ("dreaming", None),
+                                     ("running", None), ("stopping", "steps"), ("capped", "steps")]
+    events = list(EventLogReader(world.store, run_id).iter_events())
+    assert verify_log(events) == []
+    rec = world.repo.get(run_id)
+    assert rec.closed and rec.steps == 4 and rec.tokens == 4 * 100 + 80                       # the dream's tokens are in the run total
+    assert [(m["path"], m["deleted"]) for m in world.repo.memory_rows[run_id]] == [("notes/a.md", False), ("global.md", False)]
+    assert [e.type for e in events if e.type in ("session.boundary", "checkpoint", "dream.write")] == ["session.boundary", "dream.write", "checkpoint"]
+    assert len(world.repo.checkpoints[run_id]) == 1 and verify_bundle(world.store.get(f"runs/{run_id}/bundle.zip")).ok
+
+
+@pytest.mark.parametrize("sessions", [{"session_len": 2}, {"session_len": 2, "checkpoint_every": 1}])
+def test_a_fork_resumes_from_its_parents_checkpoint_through_the_real_stack(world, sessions) -> None:  # type: ignore[no-untyped-def]
+    """End to end with the real orchestrator, worker, ingest and emulator: the child plays on from the parent's checkpoint, in lockstep."""
+    from ingest.repository import ParentRef
+    parent_id = world.register()
+    config = _session_config(**sessions)
+    script = _fake_steps(4, first_mem=True)
+    orch = world.orch()
+    go(world, orch, submission(parent_id, run_config=config, provider={"name": "fake", "api_key": CANARY, "script": script}))
+    parent_events = list(EventLogReader(world.store, parent_id).iter_events())
+    checkpoints = [e for e in parent_events if e.type == "checkpoint"]
+    cp = next(e for e in checkpoints if e.step == 2)
+    assert world.repo.checkpoints[parent_id][0]["step"] == checkpoints[0].step
+
+    child_id = str(__import__("uuid").uuid4())
+    world.repo.register(child_id, parent=ParentRef(parent_id, 2, cp.seq, "cp-1"))
+    orch2 = world.orch()
+    sub = submission(child_id, run_config=config, provider={"name": "fake", "api_key": CANARY, "script": script[2:]})
+    sub = type(sub)(**{**sub.__dict__, "parent": {"run_id": parent_id, "checkpoint_id": "cp-1", "step": 2}})
+    go(world, orch2, sub)
+    child_events = list(EventLogReader(world.store, child_id).iter_events())
+    assert states(world, child_id)[-1] == ("capped", "steps"), states(world, child_id)
+    assert verify_log(child_events) == []
+    start = next(e for e in child_events if e.type == "fork.start")
+    assert start.data["parent_run_id"] == parent_id and start.data["parent_step"] == 2 and start.data["context_restored"] is True
+    manifest = json.loads(world.store.get(f"runs/{child_id}/manifest.json"))
+    assert manifest["parent"] == {"run_id": parent_id, "checkpoint_id": "cp-1", "step": 2}
+    # lockstep: the same emulator state at the end, the same score, and the fork inherited the parent's memory
+    last = lambda evs: [e for e in evs if e.type == "obs"][-1].data
+    assert last(child_events)["ram_sha256"] == last(parent_events)["ram_sha256"] and last(child_events)["score"] == last(parent_events)["score"]
+    assert [e.step for e in child_events if e.type == "obs"][-1] == 4
+    inherited = [e for e in child_events if e.data.get("seeded_from") == parent_id]
+    assert [e.data["path"] for e in inherited] == ["notes/a.md"]
+    assert world.repo.get(child_id).closed and verify_bundle(world.store.get(f"runs/{child_id}/bundle.zip")).ok
+    assert CANARY not in b"".join(world.store.get(k) for k in world.store.list(f"runs/{child_id}")).decode("latin1")
+
+
+def test_a_fork_whose_parent_checkpoint_is_missing_fails_cleanly_without_running(world) -> None:  # type: ignore[no-untyped-def]
+    from ingest.repository import ParentRef
+    parent_id = world.register()
+    orch = world.orch()
+    go(world, orch, submission(parent_id, run_config=_session_config(session_len=2), provider={"name": "fake", "api_key": CANARY, "script": _fake_steps(4)}))
+    child_id = world.register()
+    world.repo.parents[child_id] = ParentRef(parent_id, 2, 9999, "cp-x")                  # no such checkpoint event
+    sub = submission(child_id, run_config=_session_config(session_len=2), provider={"name": "fake", "api_key": CANARY, "script": _fake_steps(2)})
+    sub = type(sub)(**{**sub.__dict__, "parent": {"run_id": parent_id, "checkpoint_id": "cp-x", "step": 2}})
+    go(world, world.orch(), sub)
+    assert states(world, child_id)[-1][0] == "failed"
+    assert not [e for e in EventLogReader(world.store, child_id).iter_events() if e.type == "obs"]

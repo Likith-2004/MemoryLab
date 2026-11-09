@@ -10,7 +10,7 @@ export MEMORYLAB_WEB_URL=http://localhost:3000   # the Origin the API's WebSocke
 memorylab signup / login [--magic-link] / me / games / presets / models
 memorylab runs new --config run.json --api-key-stdin --watch
 memorylab runs watch RUN_ID        # exit 0 completed|capped, 20 failed, 21 killed
-memorylab runs events|checkpoints|score|frame|export|memory ls|cat|diff RUN_ID
+memorylab runs events|checkpoints|score|frame|export|dream|memory ls|cat|diff RUN_ID   # dream: what the dream job changed, before/after
 memorylab fork RUN --checkpoint CP --set preset_ref='"none@1"' --max-steps 50 --max-tokens 100000 --max-wall-s 600
 memorylab experiments new|list|show|compare|add|remove
 memorylab leaderboard / admin runs|kill|breaker|reports|resolve|unverify / delete-account

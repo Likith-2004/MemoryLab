@@ -100,3 +100,29 @@ ROMs and start states are trusted artefacts: they come from sha256-pinned bundle
 PyBoy parses them in-process in the child; a memory-safety bug there would be contained only
 by the child rlimits now and by the container sandbox from M5. User-supplied ROMs or states
 are out of scope (plan: no uploads in MVP).
+
+## U-8 The web server hop (M7)
+
+The browser holds **no tokens**. Sign-in, refresh and sign-out go through the web server (`apps/web/src/app/bff/*`), which keeps the
+access and refresh token in `HttpOnly; SameSite=Strict; Path=/` cookies (`__Host-` prefixed and `Secure` on https sites) and proxies
+`/api/v1/*` with the bearer token added. XSS therefore cannot read a session. The cost is that this is cookie authentication, so CSRF
+is no longer "not applicable", and the provider key now crosses one more hop. Controls (tests in `apps/web/tests/bff.test.ts` and the
+Playwright suite):
+
+- **CSRF:** every non-GET request to the web server needs a same-origin `Origin` (or, when absent, `Sec-Fetch-Site: same-origin`) AND the
+  custom header `X-Memorylab-CSRF: 1` (a cross-origin caller cannot send it without a CORS preflight, which we do not grant). 403 before any work.
+- **Proxy allowlist:** only `/api/v1/*` on the configured API host; `..`, encoded slashes/dots/backslashes, `//` and NUL are rejected; the
+  browser's `Authorization`, `Cookie` and `X-Forwarded-*` are never forwarded; body capped at 64 KB; redirects never followed (a frame is a
+  302 to a signed URL the browser fetches itself); `force-dynamic` and `no-store` everywhere.
+- **Provider key:** forwarded as request-body bytes, never parsed, stored or logged; the web server has no request-body logging, and an
+  unexpected error returns only an opaque incident id (the log line holds the id and the exception type). Canary tests check the handlers'
+  console output and, end to end, the server's stdout/stderr, `.next/cache` and temp directories.
+- **Client address:** Next neither exposes the socket peer nor overwrites a client-supplied `X-Forwarded-For` (measured), so the address is
+  taken only from a **trusted load balancer hop** (`MEMORYLAB_WEB_TRUSTED_HOPS`, at least 1 in production or the server refuses to start): the
+  entry N places from the right. The web server sends the API a single clean `X-Forwarded-For` value. Set the API's
+  `MEMORYLAB_TRUSTED_PROXY_HOPS=1` for traffic through the web server; direct API clients (CLI, WebSocket) reach it through its own load balancer,
+  which is also one hop.
+- **Production config guard:** with `NODE_ENV=production` the server refuses to start if the API, auth, public API or site URL is http:// to a
+  non-loopback host, or if no trusted hop is configured. The CSP's `img-src`/`connect-src` are built from the same URLs.
+- **Browser bundle:** no GoTrue key at all (the web server holds the publishable key), no service-role key, no provider key: the built
+  `.next` output is scanned in the gate. CSP is nonce-based without `unsafe-inline`/`unsafe-eval` in production.

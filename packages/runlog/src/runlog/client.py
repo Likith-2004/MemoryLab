@@ -1,5 +1,6 @@
 """Worker-side event sinks: redaction wrapper and the HTTP client for the ingest service."""
 
+import json
 import time
 from collections.abc import Callable
 from typing import Any
@@ -69,6 +70,31 @@ class HttpEventSink:
     def upload_frame(self, step: int, png: bytes) -> None:
         self._request("PUT", f"/v1/runs/{self._run_id}/frames/{step}", content=png,
                       headers={"content-type": "image/png"})
+
+    def upload_checkpoint(self, cp: Any, context: dict[str, Any]) -> None:
+        """Store a checkpoint's emulator state and model context (the `checkpoint` event that announces them is logged after this)."""
+        base = f"/v1/runs/{self._run_id}/checkpoints/{cp.step}"
+        self._request("PUT", f"{base}/state", content=cp.state, headers={"content-type": "application/octet-stream"})
+        self._request("PUT", f"{base}/context", content=json.dumps(context, separators=(",", ":")).encode(),
+                      headers={"content-type": "application/json"})
+
+    def fetch_parent(self) -> tuple[dict[str, Any], bytes]:
+        """For a forked run: the parent's checkpoint event, context and memory history, and the emulator state."""
+        headers = {"authorization": f"Bearer {self._token.reveal()}"}
+        try:
+            meta = self._client.get(f"/v1/runs/{self._run_id}/parent", headers=headers)
+            state = self._client.get(f"/v1/runs/{self._run_id}/parent/state", headers=headers)
+        except httpx.HTTPError:
+            raise IngestUnavailable("ingest could not be reached for the parent checkpoint") from None
+        for r in (meta, state):
+            if r.status_code >= 500:
+                raise IngestUnavailable(f"ingest failed ({r.status_code})")
+            if r.status_code != 200:
+                raise IngestRejected(f"ingest refused the parent checkpoint ({r.status_code})")
+        body = meta.json()
+        if not isinstance(body, dict):
+            raise IngestRejected("malformed parent payload")
+        return body, state.content
 
     def _post(self, path: str, body: dict[str, Any]) -> None:
         self._request("POST", path, json=body)

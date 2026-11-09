@@ -144,6 +144,22 @@ def create_app(service: IngestService) -> FastAPI:
         service.put_frame(claims, run_id, step, await request.body())
         return {"ok": True}
 
+    @app.put("/v1/runs/{run_id}/checkpoints/{step}/{kind}")
+    async def put_checkpoint(run_id: str, step: int, kind: str, request: Request, claims: Claims = Depends(authed)) -> dict[str, bool]:  # noqa: B008
+        want = "application/json" if kind == "context" else "application/octet-stream"
+        if request.headers.get("content-type", "").split(";")[0] != want:
+            raise Invalid(f"content-type must be {want}")
+        service.put_checkpoint_blob(claims, run_id, step, kind, await request.body())
+        return {"ok": True}
+
+    @app.get("/v1/runs/{run_id}/parent")
+    async def parent(run_id: str, claims: Claims = Depends(authed)) -> dict[str, Any]:  # noqa: B008
+        return service.parent_payload(claims, run_id)
+
+    @app.get("/v1/runs/{run_id}/parent/state")
+    async def parent_state(run_id: str, claims: Claims = Depends(authed)) -> Response:  # noqa: B008
+        return Response(service.parent_state(claims, run_id), media_type="application/octet-stream")
+
     @app.put("/v1/runs/{run_id}/manifest")
     async def put_manifest(run_id: str, request: Request, claims: Claims = Depends(authed)) -> dict[str, bool]:  # noqa: B008
         try:

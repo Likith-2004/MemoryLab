@@ -2,6 +2,26 @@
 
 Format per milestone: scope, changes, tests/evidence, deviations, tag.
 
+## M8: sessions, dream and resume (on branch `m7-web`)
+
+### M8 review fixes 1-3
+
+- Per-run checkpoint quota: migration 20261108000019 (`run_ingest_state.checkpoints`), `Limits.max_checkpoints_per_run=200`, counted per distinct step at upload time (orphans count, an idempotent re-upload is free, a different blob for the same step is still a 409), 429 `quota_exceeded` beyond it.
+- API fork end to end (`services/api/tests/test_fork_e2e.py`, 3 tests): public fork through API, orchestrator, worker and ingest; private is a 404 and creates nothing; an invisible run's checkpoint is unusable.
+- Worker: `_control` tolerates a closed stdin and `main` joins the heartbeat thread, which removes the "I/O operation on closed file" warning; unraisable/thread exceptions are errors in the orchestrator and worker suites.
+- Sandbox image staleness: `infra/docker/build.sh` labels the worker image `memorylab.src` (hash from `scripts/image_src_hash.py` over the labharness, runlog and worker sources); `test_docker` fails, not skips, when the label differs from the tree (+2 tests). The Docker tests had run against an 11 h old image.
+
+- labharness: `session_len` boundaries (context dropped, emulator and memory kept, capped inject file only), the dream job (own token cap counted in the run total, memory tools only, `dream.*` events with diffs), checkpoints at boundaries and every `checkpoint_every` steps with the model context stored, and resume. runlog/ingest: dream rows are memory mutations; `dream_ops` apart from `memory_ops`.
+- Checkpoints in ingest (state + context blobs, `checkpoints` rows) and the worker/orchestrator resume path: B-6 closed, forking on by default. Web: dream changes before/after side by side in the memory panel, dream events in the log; CLI: `memorylab runs dream`.
+- Tests: labharness +22 (sessions), runlog +6, ingest +17, orchestrator +5 (incl. 1 Docker fork test with two real sandboxes), web +11 vitest and 2 Playwright, CLI +2.
+
+## M7: web (branch `m7-web`, in progress)
+
+- `apps/web`: Next.js 16 App Router, strict TypeScript, Tailwind with our own tokens. All 13 screens: landing, auth (sign in, sign up, reset, magic link), new run (4 steps + review), live run and replay (one screen, scrub with `?at=`), memory drawer, fork modal, experiment compare, leaderboard, my runs, account, admin, legal drafts and 404. Every listed state: queued, starting, running, session boundary, dreaming, stopping, ended with reason, disconnected/resuming (then polling), capacity_full, key_rejected, n < 5, runs still running, breaker banner.
+- Security: nonce CSP without unsafe-inline/eval, HSTS, Referrer/Permissions policy, no tokens in the browser (httpOnly cookie session behind a same-origin proxy with CSRF checks, path allowlist and trusted-hop client address), `no-raw-html` lint rule, built-bundle secret scan, production config guard. See SECURITY.md U-8.
+- Tests: 94 vitest, 35 Playwright (real stack: GoTrue, Postgres, accounts, a scripted orchestrator): launch to export, XSS corpus in memory/summaries/titles/reports, axe on every screen (light and dark), keyboard-only flow, 360 px, enumeration, security headers and network, state tests, Lighthouse. `make gate` runs all of it (`make web`).
+- Found by the tests: Radix inline styles vs the CSP (replaced), `upgrade-insecure-requests` on http, sign-in rate limit tripping the suite, a tab layout rule lost to `[hidden]`, an unlayered base style overriding utilities.
+
 ## CLI (branch `cli`, after M6)
 
 - `packages/cli` (`memorylab`): login (password or magic link), logout [--everywhere], signup, me, delete-account, games, presets, models, runs new/list/show/stop/delete/patch/watch/events/checkpoints/score/frame/export/memory, fork, experiments, leaderboard, admin. `--json` everywhere, stable exit codes, provider key only from stdin/env/hidden prompt, session file 0600 with automatic refresh, WebSocket tail with resume and polling fallback, export verified by sha256, control characters escaped in all server text.

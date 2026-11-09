@@ -45,3 +45,19 @@ and acceptable for a hosted service; anything stronger (GPL/AGPL/SSPL/BUSL) is r
 |---|---|---|
 | rgbds 1.0.1 | MIT | Build tool for the fixture ROMs only; not shipped. Installed from the upstream release tarball, sha256 `80a5cad8dae27e24e46a93041352c47cadbc165103983f41c2b3082c42f6dad9` verified. |
 | Fixture ROMs (`packages/games/fixture`) | CC0-1.0 | Authored for Memory Lab. Test-only; never offered to visitors. |
+
+## Web app (`apps/web`, npm)
+
+| Package | Version | Licence | Use |
+|---|---|---|---|
+| next, react, react-dom | 16.4.5 / 19.3.1 | MIT | The web app. |
+| Radix UI / shadcn/ui (evaluated, **not used**) | n/a | MIT | Radix Dialog and Tabs render inline `style` attributes and an un-nonced `<style>`; our production CSP (nonce-only styles) blocks them, so `src/components/dialog.tsx` (native `<dialog>`) and `tabs.tsx` (ARIA tabs) are written in-house. The API shape follows shadcn's wrapper; no code was copied. |
+| tailwindcss, @tailwindcss/postcss, postcss | 4.3.5 / 8.5.32 | MIT | Styling with our own tokens. |
+| typescript | 6.0.3 | Apache-2.0 | Build-time only. |
+| eslint, eslint-config-next, typescript-eslint | 9.39.5 / 16.4.5 / 8.72.1 | MIT | Build-time only; includes our `no-raw-html` rule. |
+| vitest | 5.1.0 | MIT | Unit tests. |
+| @playwright/test | 1.65.0 | Apache-2.0 | End-to-end tests (build-time only; browsers are downloaded separately by Playwright). |
+| @axe-core/playwright, axe-core | 4.14.0 | MPL-2.0 | Accessibility checks in tests; not shipped. |
+| lighthouse | 13.6.0 | Apache-2.0 | Score check in tests; not shipped. |
+
+`npm audit` reports 8 moderate findings, all in the lint toolchain's `minimatch` (`eslint-config-next` -> `typescript-eslint`). That chain runs at build time only and is not in the shipped bundle; revisit when upstream updates.

@@ -188,3 +188,19 @@ def test_oversized_bodies_are_refused(env: Env) -> None:
     r = env.client.post("/api/v1/runs/validate", content=b"{" + b" " * 70_000 + b"}",
                         headers={**bearer(uid), "content-type": "application/json"})
     assert r.status_code == 413
+
+
+def test_an_explicit_default_sessions_block_has_the_same_config_hash_as_none_on_the_validate_path(env: Env) -> None:
+    uid = env.user()
+    base = body(env, "x")
+    for k in ("api_key", "game", "visibility"):
+        del base[k]
+    plain = env.client.post("/api/v1/runs/validate", json=base, headers=bearer(uid)).json()
+    for block in ({}, {"session_len": None, "dream": False}):
+        cfg = {**base, "config": {**base["config"], "sessions": block}}
+        got = env.client.post("/api/v1/runs/validate", json=cfg, headers=bearer(uid))
+        assert got.status_code == 200 and got.json()["config_hash"] == plain["config_hash"]
+    on = env.client.post("/api/v1/runs/validate", json={**base, "config": {**base["config"], "sessions": {"session_len": 100, "dream": True}}}, headers=bearer(uid))
+    assert on.status_code == 200 and on.json()["config_hash"] != plain["config_hash"]
+    bad = env.client.post("/api/v1/runs/validate", json={**base, "config": {**base["config"], "sessions": {"dream": True}}}, headers=bearer(uid))
+    assert bad.status_code == 422

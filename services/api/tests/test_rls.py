@@ -504,9 +504,11 @@ def test_the_fork_readers_follow_get_visible_run(db: Db) -> None:
     assert seen(unl, cps[pub]) == (1, 0)                    # a checkpoint of another run is not found under this run
     assert seen(pub, cps[priv]) == (1, 0)                   # ...in particular not a hidden run's
     db.as_(None)
+    assert len(db.q("select * from api_private.run_config(%s)", pub)) == 1        # a public run's configuration is public (migration 17)
+    assert db.q("select * from api_private.run_config(%s)", priv) == []
     db.x("savepoint s")
-    with pytest.raises(psycopg.errors.InsufficientPrivilege):    # forking needs a signed-in user: no anon execute
-        db.q("select * from api_private.run_config(%s)", pub)
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):                     # but forking needs a signed-in user: no anon execute
+        db.q("select * from api_private.run_checkpoint(%s, %s)", pub, cps[pub])
     db.x("rollback to savepoint s")
 
 

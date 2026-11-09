@@ -200,3 +200,13 @@ def test_a_full_queue_drops_jobs_and_counts_them() -> None:
         assert jobs.drain()
     finally:
         jobs.close()
+
+
+def test_the_address_tag_is_keyed_by_the_deployment_secret() -> None:
+    import hashlib
+    e = "victim@example.test"
+    a, b = address_tag(e, b"pepper-one-0123456789"), address_tag(e, b"pepper-two-0123456789")
+    assert a != b and len(a) == len(b) == 10
+    assert a == address_tag(e, b"pepper-one-0123456789")                       # stable under one secret
+    assert a != hashlib.sha256(e.encode()).hexdigest()[:10]                   # not the unsalted hash
+    assert address_tag(e, b"k") != address_tag("other@example.test", b"k")
