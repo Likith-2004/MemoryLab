@@ -22,6 +22,7 @@ build_service() {
   docker build -q -f infra/docker/Dockerfile.service --target "$target" --build-arg "SERVICE=$pkg" --build-arg "PKGS=$pkgs" \
     -t "memorylab-$name:dev" --label memorylab.owner=memorylab .
 }
+build_service dockerproxy dockerproxy "services/dockerproxy" plain
 build_service ingest ingest "packages/runlog packages/labharness services/ingest" plain
 build_service api api "packages/runlog packages/labharness services/ingest services/api" plain
 build_service accounts accounts "packages/runlog packages/labharness services/ingest services/accounts" plain

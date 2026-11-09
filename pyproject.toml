@@ -1,6 +1,6 @@
 # Virtual workspace root: one venv and one lockfile for every Python package.
 [tool.uv.workspace]
-members = ["packages/labharness", "packages/runlog", "services/ingest", "services/egressproxy", "services/worker", "services/orchestrator", "services/api", "services/accounts", "packages/cli"]
+members = ["packages/labharness", "packages/runlog", "services/ingest", "services/egressproxy", "services/dockerproxy", "services/worker", "services/orchestrator", "services/api", "services/accounts", "packages/cli"]
 
 [tool.ruff]
 line-length = 100
