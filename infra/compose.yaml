@@ -6,8 +6,10 @@
 #
 # What is exposed: only the API and the web app, on loopback by default (put the TLS terminator / load balancer in front, see
 # docs/LAUNCH.md). Everything else is on internal networks. Every container: non-root, read-only root filesystem, no capabilities,
-# no-new-privileges, memory and pid limits. SANDBOXES are not defined here: the orchestrator starts one per run through the Docker
-# socket, onto the `sandbox` network, which has no route out except the egress proxy (see SECURITY.md on the socket).
+# no-new-privileges, memory and pid limits. SANDBOXES are not defined here: the orchestrator starts one per run, onto the `sandbox`
+# network, which has no route out except the egress proxy. It does NOT hold the Docker socket: it talks to `dockerproxy`, a filter
+# that holds the socket and allows only the calls for our own hardened sandboxes (SECURITY.md U-10). Secrets are mounted as files under
+# /run/secrets (not environment variables, which `docker inspect` shows): the services read NAME_FILE.
 
 x-hardened: &hardened
   read_only: true
@@ -19,13 +21,25 @@ x-hardened: &hardened
   pids_limit: 256
   mem_limit: 512m
 
-x-supabase-env: &db
-  MEMORYLAB_SERVICE_DB_URL: ${MEMORYLAB_SERVICE_DB_URL:?service-role database URL}
+# One file per secret in ${MEMORYLAB_SECRETS_DIR} (outside the repository, a directory only the operator can enter), bind-mounted read-only at
+# /run/secrets/<name>. The service user is uid 10001: chown the files to it with mode 0400, or use mode 0444 inside that private directory.
+secrets:
+  token_secret: {file: "${MEMORYLAB_SECRETS_DIR:?directory holding one file per secret}/token_secret"}
+  orchestrator_token: {file: "${MEMORYLAB_SECRETS_DIR}/orchestrator_token"}
+  accounts_token: {file: "${MEMORYLAB_SECRETS_DIR}/accounts_token"}
+  blob_signing_secret: {file: "${MEMORYLAB_SECRETS_DIR}/blob_signing_secret"}
+  log_pepper: {file: "${MEMORYLAB_SECRETS_DIR}/log_pepper"}
+  auth_service_key: {file: "${MEMORYLAB_SECRETS_DIR}/auth_service_key"}
+  service_db_url: {file: "${MEMORYLAB_SECRETS_DIR}/service_db_url"}     # holds the service-role password
+  api_db_url: {file: "${MEMORYLAB_SECRETS_DIR}/api_db_url"}             # holds the memorylab_api password
 
 name: memorylab
 
 networks:
   backend:            # service to service; no route out
+    internal: true
+    labels: {memorylab.owner: memorylab}
+  dockerctl:          # the orchestrator and the Docker filter, nothing else
     internal: true
     labels: {memorylab.owner: memorylab}
   sandbox:            # per-run containers and the egress proxy; no route out
@@ -36,8 +50,12 @@ networks:
     labels: {memorylab.owner: memorylab}
   edge:               # api and web, the only published services
     labels: {memorylab.owner: memorylab}
-  supabase:           # Postgres + GoTrue of the local Supabase stack (replace with the hosted project's URLs in production)
-    name: ${SUPABASE_NETWORK:-supabase_network_memorylab}
+  # How a service reaches Postgres and GoTrue. LOCAL: the Supabase CLI's own network (the default below; it is FLAT, so every container on it
+  # can reach every other one on it, token-protected services included: acceptable for local use only). HOSTED Supabase: create a bridge with
+  # inter-container traffic disabled and set UPSTREAM_NETWORK to it, so a service can call out to the hosted project but cannot call a peer:
+  #   docker network create -o com.docker.network.bridge.enable_icc=false memorylab-upstream
+  upstream:
+    name: ${UPSTREAM_NETWORK:-supabase_network_memorylab}
     external: true
 
 volumes:
@@ -49,11 +67,12 @@ services:
     image: memorylab-ingest:dev
     command: ["uvicorn", "--factory", "ingest.main:build", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--no-server-header"]
     environment:
-      <<: *db
-      MEMORYLAB_TOKEN_SECRET: ${MEMORYLAB_TOKEN_SECRET:?}
+      MEMORYLAB_SERVICE_DB_URL_FILE: /run/secrets/service_db_url
+      MEMORYLAB_TOKEN_SECRET_FILE: /run/secrets/token_secret
       MEMORYLAB_OBJECT_STORE: /data/store
+    secrets: [service_db_url, token_secret]
     volumes: ["store:/data/store"]
-    networks: [backend, supabase]
+    networks: [backend, upstream]
     healthcheck: &py-health
       test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=3).status==200 else 1)"]
       interval: 5s
@@ -71,13 +90,32 @@ services:
       backend: {}
       egress: {}
 
+  dockerproxy:
+    <<: *hardened
+    image: memorylab-dockerproxy:dev
+    # The only holder of the Docker socket. It allows `docker run -i --rm` of the worker image onto the sandbox network with the hardening
+    # flags we set (and refuses privileged, binds, host namespaces, devices, capabilities, other images or networks), `kill`/`rm -f` of our
+    # own sandboxes and the inspect calls the orchestrator makes; every other Docker API call is a 403.
+    command: ["python", "-m", "dockerproxy.main", "--listen", "0.0.0.0:2375", "--socket", "/var/run/docker.sock",
+              "--image", "memorylab-worker:dev", "--network", "memorylab-sandbox"]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    group_add: ["${DOCKER_GID:?the group id of /var/run/docker.sock}"]
+    mem_limit: 128m
+    networks: [dockerctl]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket;socket.create_connection(('127.0.0.1',2375),3).close()"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
   orchestrator:
     <<: *hardened
     image: memorylab-orchestrator:dev
     command: ["uvicorn", "--factory", "orchestrator.main:build", "--host", "0.0.0.0", "--port", "8300", "--no-access-log", "--no-server-header"]
     environment:
-      MEMORYLAB_ORCHESTRATOR_TOKEN: ${MEMORYLAB_ORCHESTRATOR_TOKEN:?}
-      MEMORYLAB_TOKEN_SECRET: ${MEMORYLAB_TOKEN_SECRET:?}
+      DOCKER_HOST: tcp://dockerproxy:2375                          # no socket in this container
+      MEMORYLAB_ORCHESTRATOR_TOKEN_FILE: /run/secrets/orchestrator_token
+      MEMORYLAB_TOKEN_SECRET_FILE: /run/secrets/token_secret
       MEMORYLAB_WORKER_IMAGE: memorylab-worker:dev
       MEMORYLAB_SANDBOX_NETWORK: memorylab-sandbox
       MEMORYLAB_PROXY_URL: http://egress:3128
@@ -86,10 +124,9 @@ services:
       MEMORYLAB_GAMES_DIR: /opt/games
       MEMORYLAB_MAX_CONCURRENT: ${MEMORYLAB_MAX_CONCURRENT:-8}
       MEMORYLAB_SANDBOX_RUNTIME: ${MEMORYLAB_SANDBOX_RUNTIME:-}      # runsc once gVisor is installed on the host (BLOCKED.md B-3)
-    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
-    group_add: ["${DOCKER_GID:?the group id of /var/run/docker.sock}"]
-    networks: [backend, sandbox]
-    depends_on: {ingest: {condition: service_healthy}, egress: {condition: service_started}}
+    secrets: [orchestrator_token, token_secret]
+    networks: [backend, sandbox, dockerctl]
+    depends_on: {ingest: {condition: service_healthy}, egress: {condition: service_started}, dockerproxy: {condition: service_healthy}}
     healthcheck:
       <<: *py-health
       test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8300/internal/health',timeout=3).status==200 else 1)"]
@@ -99,12 +136,13 @@ services:
     image: memorylab-reaper:dev
     command: ["python", "-m", "orchestrator.reaper"]
     environment:
-      <<: *db
+      MEMORYLAB_SERVICE_DB_URL_FILE: /run/secrets/service_db_url
       MEMORYLAB_INGEST_URL: http://ingest:8000
       MEMORYLAB_ORCHESTRATOR_URL: http://orchestrator:8300
-      MEMORYLAB_ORCHESTRATOR_TOKEN: ${MEMORYLAB_ORCHESTRATOR_TOKEN:?}
-      MEMORYLAB_TOKEN_SECRET: ${MEMORYLAB_TOKEN_SECRET:?}
-    networks: [backend, supabase]
+      MEMORYLAB_ORCHESTRATOR_TOKEN_FILE: /run/secrets/orchestrator_token
+      MEMORYLAB_TOKEN_SECRET_FILE: /run/secrets/token_secret
+    secrets: [service_db_url, orchestrator_token, token_secret]
+    networks: [backend, upstream]
     depends_on: {ingest: {condition: service_healthy}, orchestrator: {condition: service_healthy}}
 
   accounts:
@@ -112,13 +150,14 @@ services:
     image: memorylab-accounts:dev
     command: ["uvicorn", "--factory", "accounts.main:build", "--host", "0.0.0.0", "--port", "8400", "--no-access-log", "--no-server-header"]
     environment:
-      <<: *db
+      MEMORYLAB_SERVICE_DB_URL_FILE: /run/secrets/service_db_url
       MEMORYLAB_ORCHESTRATOR_URL: http://orchestrator:8300
-      MEMORYLAB_ORCHESTRATOR_TOKEN: ${MEMORYLAB_ORCHESTRATOR_TOKEN:?}
+      MEMORYLAB_ORCHESTRATOR_TOKEN_FILE: /run/secrets/orchestrator_token
       MEMORYLAB_AUTH_URL: ${MEMORYLAB_AUTH_URL_INTERNAL:?GoTrue as the services reach it}
-      MEMORYLAB_AUTH_SERVICE_KEY: ${MEMORYLAB_AUTH_SERVICE_KEY:?}
-      MEMORYLAB_ACCOUNTS_TOKEN: ${MEMORYLAB_ACCOUNTS_TOKEN:?}
-    networks: [backend, supabase]
+      MEMORYLAB_AUTH_SERVICE_KEY_FILE: /run/secrets/auth_service_key
+      MEMORYLAB_ACCOUNTS_TOKEN_FILE: /run/secrets/accounts_token
+    secrets: [service_db_url, orchestrator_token, auth_service_key, accounts_token]
+    networks: [backend, upstream]
     depends_on: {orchestrator: {condition: service_healthy}}
     healthcheck:
       <<: *py-health
@@ -135,21 +174,22 @@ services:
       MEMORYLAB_JWT_ISSUER: ${MEMORYLAB_JWT_ISSUER:?}
       MEMORYLAB_AUTH_URL: ${MEMORYLAB_AUTH_URL_INTERNAL:?}
       MEMORYLAB_AUTH_APIKEY: ${MEMORYLAB_PUBLISHABLE_KEY:?}
-      MEMORYLAB_DB_URL: ${MEMORYLAB_API_DB_URL:?the memorylab_api login role, never postgres}
+      MEMORYLAB_DB_URL_FILE: /run/secrets/api_db_url                  # the memorylab_api login role, never postgres
       MEMORYLAB_ORCHESTRATOR_URL: http://orchestrator:8300
-      MEMORYLAB_ORCHESTRATOR_TOKEN: ${MEMORYLAB_ORCHESTRATOR_TOKEN:?}
+      MEMORYLAB_ORCHESTRATOR_TOKEN_FILE: /run/secrets/orchestrator_token
       MEMORYLAB_ACCOUNTS_URL: http://accounts:8400
-      MEMORYLAB_ACCOUNTS_TOKEN: ${MEMORYLAB_ACCOUNTS_TOKEN:?}
+      MEMORYLAB_ACCOUNTS_TOKEN_FILE: /run/secrets/accounts_token
       MEMORYLAB_OBJECT_STORE: /data/store
-      MEMORYLAB_BLOB_SIGNING_SECRET: ${MEMORYLAB_BLOB_SIGNING_SECRET:?}
+      MEMORYLAB_BLOB_SIGNING_SECRET_FILE: /run/secrets/blob_signing_secret
       MEMORYLAB_PUBLIC_API_URL: ${MEMORYLAB_PUBLIC_API_URL:?the API as a browser reaches it}
       MEMORYLAB_ALLOWED_ORIGINS: ${MEMORYLAB_SITE_URL:?}
-      MEMORYLAB_LOG_PEPPER: ${MEMORYLAB_LOG_PEPPER:?}
+      MEMORYLAB_LOG_PEPPER_FILE: /run/secrets/log_pepper
       # exactly one trusted proxy: the web server (it forwards the visitor's address). Raise it only for the number of proxies you run.
       MEMORYLAB_TRUSTED_PROXY_HOPS: ${MEMORYLAB_API_TRUSTED_HOPS:-1}
+    secrets: [api_db_url, orchestrator_token, accounts_token, blob_signing_secret, log_pepper]
     volumes: ["store:/data/store:ro"]
     ports: ["${MEMORYLAB_API_BIND:-127.0.0.1:8100}:8000"]
-    networks: [backend, supabase, edge]
+    networks: [backend, upstream, edge]
     depends_on: {orchestrator: {condition: service_healthy}, accounts: {condition: service_healthy}}
     healthcheck:
       <<: *py-health
@@ -172,7 +212,8 @@ services:
       # X-Forwarded-For through, the limits can be bypassed.
       MEMORYLAB_WEB_TRUSTED_HOPS: ${MEMORYLAB_WEB_TRUSTED_HOPS:-1}
     ports: ["${MEMORYLAB_WEB_BIND:-127.0.0.1:3100}:3000"]
-    networks: [backend, supabase, edge]
+    # the API (on edge) and GoTrue (upstream) only: no route to ingest, the orchestrator or accounts, so a compromised web server is not one hop from them
+    networks: [upstream, edge]
     depends_on: {api: {condition: service_healthy}}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]

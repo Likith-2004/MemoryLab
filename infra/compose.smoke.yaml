@@ -1,6 +1,9 @@
 # Overlay for the launch smoke test ONLY (scripts/launch_smoke.py): a scripted provider and a key validator that accepts the one smoke key.
 # Never use it for a deployment: it exists so the stack can be exercised without a model key.
 services:
+  dockerproxy:                                  # the scripted provider's one environment flag is the only variable a sandbox may be given
+    command: ["python", "-m", "dockerproxy.main", "--listen", "0.0.0.0:2375", "--socket", "/var/run/docker.sock",
+              "--image", "memorylab-worker:dev", "--network", "memorylab-sandbox", "--allow-env", "MEMORYLAB_ALLOW_FAKE_PROVIDER"]
   orchestrator:
     command: ["uvicorn", "--factory", "smoke_orchestrator:build", "--host", "0.0.0.0", "--port", "8300", "--no-access-log", "--no-server-header"]
     environment: {PYTHONPATH: /smoke}

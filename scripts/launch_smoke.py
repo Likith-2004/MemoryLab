@@ -18,6 +18,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 import httpx
 import psycopg
@@ -52,8 +53,8 @@ def fail(msg: str) -> None:
     raise SystemExit(1)
 
 
-def run(argv: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, **kw)  # type: ignore[call-overload,no-any-return]
+def run(argv: list[str], check: bool = False, **kw: Any) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, check=check, capture_output=True, text=True, **kw)
 
 
 def supabase_env() -> dict[str, str]:
@@ -79,6 +80,16 @@ def main() -> None:
         "MEMORYLAB_API_BIND": f"127.0.0.1:{API_PORT}", "MEMORYLAB_WEB_BIND": f"127.0.0.1:{WEB_PORT}",
         "DOCKER_GID": gid, "SMOKE_PROVIDER_KEY": SMOKE_KEY,
     }
+    secrets_dir = tmp / "secrets"
+    secrets_dir.mkdir(mode=0o700)
+    secret_files = {"token_secret": "MEMORYLAB_TOKEN_SECRET", "orchestrator_token": "MEMORYLAB_ORCHESTRATOR_TOKEN", "accounts_token": "MEMORYLAB_ACCOUNTS_TOKEN",
+                    "blob_signing_secret": "MEMORYLAB_BLOB_SIGNING_SECRET", "log_pepper": "MEMORYLAB_LOG_PEPPER", "auth_service_key": "MEMORYLAB_AUTH_SERVICE_KEY",
+                    "service_db_url": "MEMORYLAB_SERVICE_DB_URL", "api_db_url": "MEMORYLAB_API_DB_URL"}
+    for fname, key in secret_files.items():                       # one file per secret; 0444 inside a 0700 directory (we cannot chown to uid 10001)
+        (secrets_dir / fname).write_text(env.pop(key) + "\n")
+        (secrets_dir / fname).chmod(0o444)
+    secret_values = [(secrets_dir / f).read_text().strip() for f in secret_files]
+    env["MEMORYLAB_SECRETS_DIR"] = str(secrets_dir)
     env_file = tmp / "smoke.env"
     fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as f:
@@ -91,7 +102,7 @@ def main() -> None:
     user_id = ""
     added_game = False
     try:
-        for img in ("ingest", "egress", "orchestrator", "reaper", "accounts", "api", "web", "worker"):
+        for img in ("ingest", "egress", "dockerproxy", "orchestrator", "reaper", "accounts", "api", "web", "worker"):
             if run(["docker", "image", "inspect", f"memorylab-{img}:dev"]).returncode != 0:
                 fail(f"image memorylab-{img}:dev is missing: run infra/docker/build.sh --all")
         say("booting the stack (docker compose up --wait)")
@@ -120,6 +131,47 @@ def main() -> None:
             if problems:
                 fail(f"{row['Service']}: {', '.join(problems)}")
         say(f"{len(rows)} containers are non-root, read-only, capability-free")
+
+        # secrets are files, not environment: none of their values appears in any container's environment (what `docker inspect` shows)
+        secret_values.append(SMOKE_KEY)
+        for row in rows:
+            blob = run(["docker", "inspect", row["ID"]]).stdout
+            if row["Service"] != "web" and any(v in blob for v in secret_values if v != SMOKE_KEY):
+                fail(f"{row['Service']}: a secret value is visible in `docker inspect`")
+        perms = run([*compose, "exec", "-T", "orchestrator", "stat", "-c", "%a %u", "/run/secrets/token_secret"]).stdout.strip()
+        if not perms.startswith(("400 ", "444 ")):
+            fail(f"the orchestrator's secret file has mode {perms!r}")
+        say("no secret value in any container's environment; the secrets are files under /run/secrets")
+
+        # the orchestrator holds no Docker socket; the filter in front of it refuses everything but our hardened sandboxes
+        orch = json.loads(run(["docker", "inspect", next(r["ID"] for r in rows if r["Service"] == "orchestrator")]).stdout)[0]
+        if any("docker.sock" in str(m.get("Source", "")) for m in orch["Mounts"]):
+            fail("the orchestrator container mounts the Docker socket")
+        if run([*compose, "exec", "-T", "orchestrator", "test", "-e", "/var/run/docker.sock"]).returncode == 0:
+            fail("a Docker socket exists inside the orchestrator container")
+        for argv in (["docker", "run", "--rm", "--privileged", "memorylab-worker:dev"], ["docker", "run", "--rm", "-v", "/:/host", "memorylab-worker:dev"],
+                     ["docker", "run", "--rm", "--network", "host", "memorylab-worker:dev"], ["docker", "run", "--rm", "python:3.14-slim", "id"],
+                     ["docker", "ps"], ["docker", "images"]):
+            attack = run([*compose, "exec", "-T", "orchestrator", *argv])
+            if attack.returncode == 0 or "memorylab docker proxy" not in attack.stderr:
+                fail(f"from inside the orchestrator `{' '.join(argv)}` was not refused by the filter: {attack.stderr[-200:]}")
+        say("from inside the orchestrator: privileged, host bind, host network, foreign image, ps and images are all refused by the Docker filter")
+
+        # least privilege on the networks: the web server is on the API's network and the upstream (GoTrue) network only, so it has no route to
+        # the orchestrator, the Docker filter or the egress proxy (those are on internal networks it is not attached to)
+        web_info = json.loads(run(["docker", "inspect", next(r["ID"] for r in rows if r["Service"] == "web")]).stdout)[0]
+        joined = sorted(n.removeprefix(PROJECT + "_") for n in web_info["NetworkSettings"]["Networks"])
+        if joined != sorted(["edge", "supabase_network_memorylab"]):
+            fail(f"the web container is attached to {joined}, expected edge and the upstream network only")
+        for host in ("orchestrator", "dockerproxy", "egress"):
+            probe = run([*compose, "exec", "-T", "web", "node", "-e", f"require('dns').lookup('{host}',(e)=>process.exit(e?0:1))"])
+            if probe.returncode != 0:
+                fail(f"the web container can resolve {host}")
+        probe = run([*compose, "exec", "-T", "api", "python", "-c",
+                     "import socket,sys\nr = 1\ntry:\n socket.gethostbyname('dockerproxy')\nexcept OSError:\n r = 0\nsys.exit(r)"])
+        if probe.returncode != 0:
+            fail("the api container can resolve the Docker filter")
+        say("the web container is on edge + upstream only and cannot resolve the orchestrator, the Docker filter or the egress proxy; the API cannot resolve the Docker filter")
 
         if admin.execute("select 1 from public.games where name = 'fixture'").fetchone() is None:
             admin.execute("insert into public.games (name, rom_sha256, licence, state_map_version, public) values ('fixture', %s, 'CC0-1.0', '1', true)", ("f" * 64,))
@@ -260,9 +312,9 @@ def main() -> None:
             print("smoke: cleanup incomplete:", type(exc).__name__, file=sys.stderr)
         if down.returncode != 0:
             print("smoke: compose down:", down.stderr[-300:], file=sys.stderr)
-        for p in tmp.rglob("*"):
-            if p.is_file():
-                p.unlink()
+        for p in sorted(tmp.rglob("*"), reverse=True):             # the secret files and the env file go too
+            p.unlink() if p.is_file() else p.rmdir()
+        tmp.rmdir()
 
 
 if __name__ == "__main__":
