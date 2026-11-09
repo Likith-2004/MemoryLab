@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest an improvement or a new capability.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to see?
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Does it touch keys, other users' data, sandboxes or the network?
+      description: If so, say how you expect it to stay safe.

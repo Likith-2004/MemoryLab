@@ -1,0 +1,13 @@
+# Every change needs the maintainer; the security-critical paths are listed again so they survive a future broader owner list.
+*                                   @TheManishCode
+/.github/                           @TheManishCode
+/services/dockerproxy/              @TheManishCode
+/services/api/src/api/auth.py       @TheManishCode
+/services/orchestrator/             @TheManishCode
+/infra/                             @TheManishCode
+/apps/web/src/proxy.ts              @TheManishCode
+/apps/web/src/app/bff/              @TheManishCode
+/apps/web/src/server/               @TheManishCode
+/packages/runlog/src/runlog/redaction.py  @TheManishCode
+/docs/SECURITY.md                   @TheManishCode
+/SECURITY.md                        @TheManishCode

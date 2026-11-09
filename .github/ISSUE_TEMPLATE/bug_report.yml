@@ -1,0 +1,33 @@
+name: Bug report
+description: Something does not work as documented. For security problems use the private advisory link instead.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Not a security problem?** Then continue. If a bug could expose a key, another user's data, or escape a sandbox, stop and use the private
+        report (see SECURITY.md). **Never paste a real API key, token or personal data** into an issue.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Commands, a minimal run config (without any key), and the commit you are on.
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Docker version, Python and Node versions, commit hash.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output
+      description: Relevant log lines. Check them for secrets first.
+      render: text
