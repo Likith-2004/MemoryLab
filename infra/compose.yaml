@@ -1,0 +1,181 @@
+# The full Memory Lab stack on ONE host: ingest, orchestrator (+ the egress proxy and per-run sandboxes it starts), reaper, accounts,
+# API and web. Postgres and GoTrue come from Supabase (`supabase start --workdir infra` locally; the hosted project in production),
+# reached over the external network below. Build the images first: infra/docker/build.sh --all.
+#
+#   docker compose -p memorylab -f infra/compose.yaml --env-file <env> up -d --wait      (see infra/compose.env.example)
+#
+# What is exposed: only the API and the web app, on loopback by default (put the TLS terminator / load balancer in front, see
+# docs/LAUNCH.md). Everything else is on internal networks. Every container: non-root, read-only root filesystem, no capabilities,
+# no-new-privileges, memory and pid limits. SANDBOXES are not defined here: the orchestrator starts one per run through the Docker
+# socket, onto the `sandbox` network, which has no route out except the egress proxy (see SECURITY.md on the socket).
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs: ["/tmp:size=64m,mode=1777"]
+  restart: unless-stopped
+  labels: {memorylab.owner: memorylab}
+  pids_limit: 256
+  mem_limit: 512m
+
+x-supabase-env: &db
+  MEMORYLAB_SERVICE_DB_URL: ${MEMORYLAB_SERVICE_DB_URL:?service-role database URL}
+
+name: memorylab
+
+networks:
+  backend:            # service to service; no route out
+    internal: true
+    labels: {memorylab.owner: memorylab}
+  sandbox:            # per-run containers and the egress proxy; no route out
+    internal: true
+    name: memorylab-sandbox
+    labels: {memorylab.owner: memorylab}
+  egress:             # the egress proxy's way out (allow-listed hosts only, enforced by the proxy)
+    labels: {memorylab.owner: memorylab}
+  edge:               # api and web, the only published services
+    labels: {memorylab.owner: memorylab}
+  supabase:           # Postgres + GoTrue of the local Supabase stack (replace with the hosted project's URLs in production)
+    name: ${SUPABASE_NETWORK:-supabase_network_memorylab}
+    external: true
+
+volumes:
+  store: {labels: {memorylab.owner: memorylab}}    # the local object store (events, frames, bundles, checkpoints); production: S3 (BLOCKED.md B-2)
+
+services:
+  ingest:
+    <<: *hardened
+    image: memorylab-ingest:dev
+    command: ["uvicorn", "--factory", "ingest.main:build", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--no-server-header"]
+    environment:
+      <<: *db
+      MEMORYLAB_TOKEN_SECRET: ${MEMORYLAB_TOKEN_SECRET:?}
+      MEMORYLAB_OBJECT_STORE: /data/store
+    volumes: ["store:/data/store"]
+    networks: [backend, supabase]
+    healthcheck: &py-health
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=3).status==200 else 1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  egress:
+    <<: *hardened
+    image: memorylab-egress:dev
+    # default deny: the ingest service (private, the only private address allowed) plus the listed public provider hosts
+    command: ["--listen", "0.0.0.0:3128", "--allow-private", "ingest:8000", "--allow", "api.anthropic.com:443"]
+    mem_limit: 128m
+    networks:
+      sandbox: {aliases: [egress]}
+      backend: {}
+      egress: {}
+
+  orchestrator:
+    <<: *hardened
+    image: memorylab-orchestrator:dev
+    command: ["uvicorn", "--factory", "orchestrator.main:build", "--host", "0.0.0.0", "--port", "8300", "--no-access-log", "--no-server-header"]
+    environment:
+      MEMORYLAB_ORCHESTRATOR_TOKEN: ${MEMORYLAB_ORCHESTRATOR_TOKEN:?}
+      MEMORYLAB_TOKEN_SECRET: ${MEMORYLAB_TOKEN_SECRET:?}
+      MEMORYLAB_WORKER_IMAGE: memorylab-worker:dev
+      MEMORYLAB_SANDBOX_NETWORK: memorylab-sandbox
+      MEMORYLAB_PROXY_URL: http://egress:3128
+      MEMORYLAB_SANDBOX_INGEST_URL: http://ingest:8000
+      MEMORYLAB_INGEST_URL: http://ingest:8000
+      MEMORYLAB_GAMES_DIR: /opt/games
+      MEMORYLAB_MAX_CONCURRENT: ${MEMORYLAB_MAX_CONCURRENT:-8}
+      MEMORYLAB_SANDBOX_RUNTIME: ${MEMORYLAB_SANDBOX_RUNTIME:-}      # runsc once gVisor is installed on the host (BLOCKED.md B-3)
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
+    group_add: ["${DOCKER_GID:?the group id of /var/run/docker.sock}"]
+    networks: [backend, sandbox]
+    depends_on: {ingest: {condition: service_healthy}, egress: {condition: service_started}}
+    healthcheck:
+      <<: *py-health
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8300/internal/health',timeout=3).status==200 else 1)"]
+
+  reaper:
+    <<: *hardened
+    image: memorylab-reaper:dev
+    command: ["python", "-m", "orchestrator.reaper"]
+    environment:
+      <<: *db
+      MEMORYLAB_INGEST_URL: http://ingest:8000
+      MEMORYLAB_ORCHESTRATOR_URL: http://orchestrator:8300
+      MEMORYLAB_ORCHESTRATOR_TOKEN: ${MEMORYLAB_ORCHESTRATOR_TOKEN:?}
+      MEMORYLAB_TOKEN_SECRET: ${MEMORYLAB_TOKEN_SECRET:?}
+    networks: [backend, supabase]
+    depends_on: {ingest: {condition: service_healthy}, orchestrator: {condition: service_healthy}}
+
+  accounts:
+    <<: *hardened
+    image: memorylab-accounts:dev
+    command: ["uvicorn", "--factory", "accounts.main:build", "--host", "0.0.0.0", "--port", "8400", "--no-access-log", "--no-server-header"]
+    environment:
+      <<: *db
+      MEMORYLAB_ORCHESTRATOR_URL: http://orchestrator:8300
+      MEMORYLAB_ORCHESTRATOR_TOKEN: ${MEMORYLAB_ORCHESTRATOR_TOKEN:?}
+      MEMORYLAB_AUTH_URL: ${MEMORYLAB_AUTH_URL_INTERNAL:?GoTrue as the services reach it}
+      MEMORYLAB_AUTH_SERVICE_KEY: ${MEMORYLAB_AUTH_SERVICE_KEY:?}
+      MEMORYLAB_ACCOUNTS_TOKEN: ${MEMORYLAB_ACCOUNTS_TOKEN:?}
+    networks: [backend, supabase]
+    depends_on: {orchestrator: {condition: service_healthy}}
+    healthcheck:
+      <<: *py-health
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8400/internal/health',timeout=3).status==200 else 1)"]
+
+  api:
+    <<: *hardened
+    image: memorylab-api:dev
+    # --ws-max-size 1024: the 1 KB cap on a WebSocket message must hold before the server reads the message, not only in the app;
+    # --no-access-log: the stream ticket is in the /ws/ URL and must never reach a log.
+    command: ["uvicorn", "--factory", "api.main:build", "--host", "0.0.0.0", "--port", "8000", "--ws-max-size", "1024", "--no-access-log", "--no-server-header"]
+    environment:
+      MEMORYLAB_JWKS_URL: ${MEMORYLAB_JWKS_URL_INTERNAL:?}
+      MEMORYLAB_JWT_ISSUER: ${MEMORYLAB_JWT_ISSUER:?}
+      MEMORYLAB_AUTH_URL: ${MEMORYLAB_AUTH_URL_INTERNAL:?}
+      MEMORYLAB_AUTH_APIKEY: ${MEMORYLAB_PUBLISHABLE_KEY:?}
+      MEMORYLAB_DB_URL: ${MEMORYLAB_API_DB_URL:?the memorylab_api login role, never postgres}
+      MEMORYLAB_ORCHESTRATOR_URL: http://orchestrator:8300
+      MEMORYLAB_ORCHESTRATOR_TOKEN: ${MEMORYLAB_ORCHESTRATOR_TOKEN:?}
+      MEMORYLAB_ACCOUNTS_URL: http://accounts:8400
+      MEMORYLAB_ACCOUNTS_TOKEN: ${MEMORYLAB_ACCOUNTS_TOKEN:?}
+      MEMORYLAB_OBJECT_STORE: /data/store
+      MEMORYLAB_BLOB_SIGNING_SECRET: ${MEMORYLAB_BLOB_SIGNING_SECRET:?}
+      MEMORYLAB_PUBLIC_API_URL: ${MEMORYLAB_PUBLIC_API_URL:?the API as a browser reaches it}
+      MEMORYLAB_ALLOWED_ORIGINS: ${MEMORYLAB_SITE_URL:?}
+      MEMORYLAB_LOG_PEPPER: ${MEMORYLAB_LOG_PEPPER:?}
+      # exactly one trusted proxy: the web server (it forwards the visitor's address). Raise it only for the number of proxies you run.
+      MEMORYLAB_TRUSTED_PROXY_HOPS: ${MEMORYLAB_API_TRUSTED_HOPS:-1}
+    volumes: ["store:/data/store:ro"]
+    ports: ["${MEMORYLAB_API_BIND:-127.0.0.1:8100}:8000"]
+    networks: [backend, supabase, edge]
+    depends_on: {orchestrator: {condition: service_healthy}, accounts: {condition: service_healthy}}
+    healthcheck:
+      <<: *py-health
+      test: ["CMD", "python", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health',timeout=3).status==200 else 1)"]
+
+  web:
+    <<: *hardened
+    image: memorylab-web:dev
+    tmpfs: ["/tmp:size=64m,mode=1777", "/app/.next/cache:size=64m,uid=10001,gid=10001"]
+    environment:
+      MEMORYLAB_API_URL: http://api:8000
+      MEMORYLAB_AUTH_URL: ${MEMORYLAB_AUTH_URL_INTERNAL:?}
+      MEMORYLAB_PUBLISHABLE_KEY: ${MEMORYLAB_PUBLISHABLE_KEY:?}
+      MEMORYLAB_PUBLIC_API_URL: ${MEMORYLAB_PUBLIC_API_URL:?}
+      MEMORYLAB_SITE_URL: ${MEMORYLAB_SITE_URL:?}
+      # http to these two hosts is allowed because they are private-network hops; the browser-facing URLs above must be https in production
+      MEMORYLAB_INTERNAL_HTTP_HOSTS: ${MEMORYLAB_INTERNAL_HTTP_HOSTS:-api,supabase_kong_memorylab}
+      # SAFE ONLY behind exactly one proxy that overwrites or appends the real client address (Vercel overwrites; a self-hosted load
+      # balancer must append). Behind none, every visitor shares one address at the API; behind a proxy that passes a client-supplied
+      # X-Forwarded-For through, the limits can be bypassed.
+      MEMORYLAB_WEB_TRUSTED_HOPS: ${MEMORYLAB_WEB_TRUSTED_HOPS:-1}
+    ports: ["${MEMORYLAB_WEB_BIND:-127.0.0.1:3100}:3000"]
+    networks: [backend, supabase, edge]
+    depends_on: {api: {condition: service_healthy}}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

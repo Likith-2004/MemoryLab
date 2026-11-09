@@ -1,0 +1,11 @@
+# Overlay for the launch smoke test ONLY (scripts/launch_smoke.py): a scripted provider and a key validator that accepts the one smoke key.
+# Never use it for a deployment: it exists so the stack can be exercised without a model key.
+services:
+  orchestrator:
+    command: ["uvicorn", "--factory", "smoke_orchestrator:build", "--host", "0.0.0.0", "--port", "8300", "--no-access-log", "--no-server-header"]
+    environment: {PYTHONPATH: /smoke}
+    volumes: ["./smoke:/smoke:ro"]
+  api:
+    command: ["uvicorn", "--factory", "smoke_api:build", "--host", "0.0.0.0", "--port", "8000", "--ws-max-size", "1024", "--no-access-log", "--no-server-header"]
+    environment: {PYTHONPATH: /smoke, SMOKE_PROVIDER_KEY: "${SMOKE_PROVIDER_KEY:?}"}
+    volumes: ["./smoke:/smoke:ro"]
