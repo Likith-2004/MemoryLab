@@ -3,16 +3,24 @@ title = "Memory Lab gitleaks config"
 [extend]
 useDefault = true
 
+# Dependency and build output are not our source.
 [[allowlists]]
-description = "dependency and build directories, not our source"
+description = "dependency and build directories"
 paths = ['''(^|/)\.venv/''', '''(^|/)node_modules/''', '''(^|/)\.next/''']
 
+# Deliberately fake credentials used by the redaction and canary tests. Allowlisted by EXACT VALUE, never by file: a real secret added to
+# one of those test files is still found. To add a fixture, add its exact value here with a reason; do not allowlist a path or a pattern.
 [[allowlists]]
-description = "deliberately fake credentials used as redaction/canary test fixtures (exact files only)"
-paths = [
-  '''packages/runlog/tests/test_redaction\.py''',
-  '''packages/runlog/tests/test_run_artifacts\.py''',
-  '''services/ingest/tests/test_canary\.py''',
-  '''services/ingest/tests/test_app\.py''',
-  '''packages/labharness/tests/test_provider_anthropic\.py''',
+description = "fake credentials in the redaction/canary tests (exact values only)"
+regexTarget = "secret"
+regexes = [
+  '''^sk-ant-CANARY-0123456789abcdef$''',                                                     # the canary provider key of the API/web/ingest tests
+  '''^sk-ant-api03-CANARYCANARYCANARYCANARYCANARY0123456789-canary$''',
+  '''^sk-ant-api03-CANARY0canary1CANARY2canary3CANARY4canary5CANARY6canary7CANARY8xyz$''',
+  '''^sk-ant-api03-Zq8vN2xLm4Kp7RtWc1YbH6dFg3JsAe5UoIi9PlXzC0nVq$''',                          # a made-up Anthropic-shaped key in the runlog tests
+  '''^AKIAIOSFODNN7EXAMPLE$''',                                                               # AWS's documentation example access key id
+  '''^eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk$''',   # the jwt.io sample token (sub 1234567890)
 ]
+
+# The `-----BEGIN RSA PRIVATE KEY-----` header sample in the redaction tests is not reported by any rule (no key material follows it), so it needs
+# no allowlist entry; a complete private key anywhere would still be found.
