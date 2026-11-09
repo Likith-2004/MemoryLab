@@ -2,6 +2,16 @@
 
 Format per milestone: scope, changes, tests/evidence, deviations, tag.
 
+## Launch readiness (branch `launch-ready`, after `m8-done`)
+
+- Entrypoints for ingest and the orchestrator; Dockerfiles for ingest, api, accounts, orchestrator (with the Docker CLI), reaper, web and the Docker filter; `infra/docker/build.sh --all`.
+- `infra/compose.yaml` (the full stack, hardened containers, internal networks, secrets as files, only api and web published), `infra/compose.smoke.yaml`, `scripts/launch_smoke.py` (`make images`, `make smoke`, `make launch`).
+- `services/dockerproxy`: the orchestrator has no Docker socket; the filter allows our hardened sandboxes only. `runlog.envfile`: secrets from `NAME_FILE`.
+- API: security headers on every response including 500; `user_busy`/`ip_busy` is the active-run answer, not a 502. Web: robots, sitemap, favicon, OG, `MEMORYLAB_INTERNAL_HTTP_HOSTS`.
+- Docker tests fail on a stale worker image (`memorylab.src` label).
+- Docs: `docs/LAUNCH.md` (every checklist item DONE / PARTIAL / NOT RUN / BLOCKED with evidence), `BLOCKED.md` B-7..B-15, `SECURITY.md` U-10, `DECISIONS.md` M9-1..M9-8.
+- Tests: `services/dockerproxy` 169 (137 policy, 8 against a fake daemon, 24 with the real daemon and CLI); the rest of the added tests are in `runlog`, `ingest`, `orchestrator` (entrypoints, secrets from files, stale image), the API (headers, busy codes), web (vitest and Playwright `seo.spec.ts`); the compose smoke is `make smoke`. Suite totals are in the report that accompanies the final commit.
+
 ## M8: sessions, dream and resume (on branch `m7-web`)
 
 ### M8 review fixes 1-3
