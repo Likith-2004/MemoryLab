@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1
+# One Python service (api, accounts, ingest, orchestrator, reaper). Third-party dependencies come from the lockfile with hashes
+# (infra/docker/.generated/requirements-<service>.txt, written by build.sh); our own packages install with --no-deps so pip never
+# resolves a workspace sibling from PyPI. The image runs as a non-root user and is meant to be started read-only, all capabilities
+# dropped (compose does that); it holds no secrets, every value comes from the environment.
+#   docker build -f infra/docker/Dockerfile.service --build-arg SERVICE=api --build-arg PKGS="packages/runlog packages/labharness services/ingest services/api" .
+#   --target plain (default) | with-docker (the orchestrator: adds the Docker CLI it launches sandboxes with)
+FROM python:3.14-slim AS build
+ARG SERVICE
+ARG PKGS
+WORKDIR /src
+COPY infra/docker/.generated/requirements-${SERVICE}.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --require-hashes --prefix=/install -r /tmp/requirements.txt
+COPY packages ./packages
+COPY services ./services
+RUN pip install --no-cache-dir --no-deps --prefix=/install $PKGS
+
+FROM docker:cli AS dockercli
+
+FROM python:3.14-slim AS plain
+ARG SERVICE
+LABEL memorylab.owner="memorylab" memorylab.role="${SERVICE}"
+RUN groupadd --gid 10001 app && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin app
+COPY --from=build /install /usr/local
+# the local object store's mount point: a named volume created here inherits this owner, so the non-root user can write to it
+RUN mkdir -p /data/store && chown 10001:10001 /data/store
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp
+USER 10001:10001
+WORKDIR /tmp
+
+FROM plain AS with-docker
+USER root
+COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+COPY packages/games/fixture/bundle.json packages/games/fixture/fixture.gb packages/games/fixture/fixture.state packages/games/fixture/fixture.statemap.json /opt/games/fixture/
+USER 10001:10001
