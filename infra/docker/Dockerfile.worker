@@ -13,6 +13,7 @@ COPY services/worker ./services/worker
 RUN pip install --no-cache-dir --no-deps --prefix=/install ./packages/labharness ./packages/runlog ./services/worker
 # pysdl2-dll bundles image/audio/font codec libraries the headless emulator never loads (THIRD_PARTY.md):
 # remove them if PyBoy still imports without them, otherwise keep everything.
+# hadolint ignore=DL4006,SC2086 # no pipe can fail silently here (a failed prune keeps every library); $d is a single path
 RUN set -e; d=$(find /install -type d -path '*sdl2dll/dll' | head -1); \
     cp -a "$d" /tmp/dll.bak; \
     find "$d" -type f ! -name 'libSDL2-2.0.so*' -delete; \
@@ -21,7 +22,12 @@ RUN set -e; d=$(find /install -type d -path '*sdl2dll/dll' | head -1); \
 
 FROM python:3.14-slim
 LABEL memorylab.owner="memorylab" memorylab.role="sandbox-worker"
-RUN groupadd --gid 10001 worker && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin worker
+# pip is a build tool: the runtime image does not carry it (or its vendored copies of msgpack, urllib3 and friends, which scanners report)
+# --only-upgrade zlib1g: the base image can lag Debian's security repository (scanners report the gap until the base is rebuilt)
+# hadolint ignore=DL3008 # one Debian security update, taken as published
+RUN python -m pip uninstall -y pip \
+    && apt-get update && apt-get install -y --no-install-recommends --only-upgrade zlib1g && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 worker && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin worker
 COPY --from=build /install /usr/local
 COPY packages/games/fixture/bundle.json packages/games/fixture/fixture.gb packages/games/fixture/fixture.state packages/games/fixture/fixture.statemap.json /opt/games/fixture/
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 MEMORYLAB_GAMES_DIR=/opt/games HOME=/tmp

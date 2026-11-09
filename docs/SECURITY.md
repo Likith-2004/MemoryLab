@@ -163,3 +163,62 @@ Evidence index for the launch checklist: `docs/LAUNCH.md`. Topology: `infra/comp
   `Permissions-Policy` and HSTS on every response including the 500 the server-error layer answers (that layer sits outside the middleware,
   which the launch test found); a 500 is a generic problem document with an incident id. The web app sets the nonce CSP and the rest in `next.config.ts`/`proxy.ts`.
   Tests: `services/api/tests/test_security_headers.py`, `apps/web/e2e/security.spec.ts`, and the smoke against the live containers.
+
+## CI and supply chain
+
+Workflows are in `.github/workflows`. **Nothing in them has run on GitHub yet**: they were written and checked locally (actionlint and zizmor clean;
+the commands each job runs were executed on this machine, see "Not run" below) and run for the first time when the repository is pushed.
+
+**Rules every workflow follows** (the reviewer and `zizmor --pedantic` check them): top-level `permissions: {}` with the minimum per job (and a
+comment on each non-read grant); no `pull_request_target`, no `workflow_run`; every third-party action pinned to a full commit SHA with a `# vX.Y.Z`
+comment (Dependabot keeps them current); `actions/checkout` with `persist-credentials: false`; no repository secret anywhere (the tests use the
+Supabase CLI's local stack inside the runner); `${{ github.event.* }}` values go through `env:`, never into a `run:` script; `concurrency` with
+cancel-in-progress on pull requests; `timeout-minutes` on every job. Downloaded tools (gitleaks, osv-scanner, actionlint) are verified against a
+pinned SHA-256 before use; trivy and zizmor are pinned actions or versions.
+
+| Workflow | Runs on | What it checks | Required check |
+|---|---|---|---|
+| `ci.yml` | PRs, push to main | python: `make lint test` with the database (`MEMORYLAB_REQUIRE_DB=1`); web: eslint, tsc, vitest, production build, bundle scan against the runner stack's real keys, Playwright; docker: `build.sh --all`, sandbox tests in real containers (fail if the worker image is stale), the Docker filter against the real daemon, the compose launch smoke | `gate` |
+| `security.yml` | PRs, push to main, weekly | gitleaks over the full history and the tree; CodeQL python and javascript-typescript (security-extended); pip-audit, npm audit and osv-scanner over the lockfiles; hadolint on the Dockerfiles; trivy config on `infra/` and trivy image scans of every `memorylab-*` image (HIGH/CRITICAL with a fix fail); actionlint and zizmor on the workflows | `security` |
+| `scorecard.yml` | weekly, push to main | OpenSSF Scorecard, results published | none |
+| `release.yml` | `v*` tags | verifies the tag is semver, on main, and that `gate` passed on its commit; builds each image, pushes to GHCR, SPDX SBOM (syft), cosign keyless signature and SBOM attestation, build provenance attestation. Nothing is deployed | none |
+
+**Details that matter**
+
+- Secrets: `.gitleaks.toml` allowlists only the known fake test credentials, by exact value (not by file or pattern); a real secret added to a test
+  file is still found (checked with a negative control). The scan covers all history (`fetch-depth: 0`).
+- Dependency advisories: the audit fails on high and critical (osv-scanner: CVSS 7.0 or above or unscored; npm: high/critical; pip-audit reports no
+  severity, so any advisory fails). An exception lives only in `security/audit-ignores.toml` with a reason and an expiry; `scripts/audit_gate.py`
+  fails when an entry lacks either, has expired, or is more than 180 days out. The gate has its own tests (`scripts/tests`).
+- Images: trivy found real issues on the first local run and they were fixed, not ignored: runtime images no longer carry `pip` (its vendored
+  msgpack, urllib3 and setuptools were reported) or npm/corepack (the web image), and the `zlib1g` security update is applied on top of the base image.
+  trivy has no checks for compose files, so `infra/compose.yaml` is covered by the smoke's assertions (non-root, read-only, no capabilities, networks,
+  secrets as files, filter refusals), not by a scanner.
+- SARIF goes to code scanning for CodeQL, trivy config and Scorecard; `security-events: write` is granted only to those jobs. Image scans, gitleaks,
+  the audits and zizmor report in the job log and fail the job; they do not upload SARIF.
+- Release: `packages: write`, `id-token` and `attestations: write` exist only in the `publish` job. Verify a published image with
+  `cosign verify ghcr.io/<owner>/memorylab-<name>@sha256:<digest> --certificate-identity-regexp '^https://github.com/<owner>/MemoryLab/\.github/workflows/release\.yml@refs/tags/v' --certificate-oidc-issuer https://token.actions.githubusercontent.com`
+  and `gh attestation verify oci://ghcr.io/<owner>/memorylab-<name>@sha256:<digest> -R <owner>/MemoryLab`.
+
+**Not run (nothing runs on GitHub until the push).** The workflows themselves, CodeQL, Scorecard, the release path (GHCR push, cosign, SBOM,
+provenance), SARIF upload, Dependabot, and the first pass of every job on a clean runner (tool downloads, the Supabase CLI on a runner, Playwright
+browser install, run times). Run locally and clean on this tree: actionlint, zizmor `--pedantic` (online), gitleaks (history and tree, with a
+negative control), osv-scanner, pip-audit, `npm audit`, hadolint, trivy config and trivy on all nine images, the audit gate's tests, and the
+commands of the python, web and docker jobs (`make gate`, `make launch`).
+
+### Repository settings the owner must turn on (not claimed, not done by this branch)
+
+These are GitHub settings; nothing in the repository can enable them. Until they are on, the checks above advise but do not block.
+
+1. **Branch protection (or a ruleset) on `main`:** require a pull request with at least one approving review and review from Code Owners; require
+   status checks `gate` (from CI) and `security` (from Security) to pass and branches to be up to date; require conversation resolution; block force
+   pushes and deletion; do not allow bypass; require linear history if you want it.
+2. **Code security:** enable Dependabot alerts and Dependabot security updates; enable secret scanning **and push protection**; enable private
+   vulnerability reporting (the SECURITY.md link depends on it); enable code scanning (CodeQL results appear once the workflow has run).
+3. **Actions settings:** default workflow token permissions to read-only; do not allow GitHub Actions to create or approve pull requests; require
+   approval for all outside collaborators' workflow runs; allow only GitHub-owned and the pinned third-party actions if you want to restrict further.
+4. **Labels used by Dependabot** (`dependencies`, `github-actions`, `web`, `python`, `docker`) and by the issue forms (`bug`, `enhancement`) should
+   exist, or the labels are skipped.
+5. **Tags:** protect `v*` tags (a ruleset) so only maintainers can create them, since a tag starts the release workflow.
+6. **GHCR packages** are created private by the first release; set their visibility and link them to the repository deliberately.
+7. Choose a licence (BLOCKED B-16) before inviting contributions.

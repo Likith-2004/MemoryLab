@@ -7,7 +7,12 @@ RUN pip install --no-cache-dir --no-deps --prefix=/install ./services/egressprox
 
 FROM python:3.14-slim
 LABEL memorylab.owner="memorylab" memorylab.role="egress-proxy"
-RUN groupadd --gid 10002 egress && useradd --uid 10002 --gid 10002 --no-create-home --shell /usr/sbin/nologin egress
+# pip is a build tool: the runtime image does not carry it (or its vendored copies of msgpack, urllib3 and friends, which scanners report)
+# --only-upgrade zlib1g: the base image can lag Debian's security repository (scanners report the gap until the base is rebuilt)
+# hadolint ignore=DL3008 # one Debian security update, taken as published
+RUN python -m pip uninstall -y pip \
+    && apt-get update && apt-get install -y --no-install-recommends --only-upgrade zlib1g && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10002 egress && useradd --uid 10002 --gid 10002 --no-create-home --shell /usr/sbin/nologin egress
 COPY --from=build /install /usr/local
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 USER 10002:10002

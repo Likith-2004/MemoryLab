@@ -1,0 +1,157 @@
+name: CI
+
+# The one required status check is the `gate` job at the bottom. No secrets are used anywhere: the tests run against the Supabase CLI's local
+# stack inside the runner. Nothing here deploys anything.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SUPABASE_CLI_VERSION: "3.0.0"
+  MEMORYLAB_REQUIRE_DB: "1"          # a missing database fails a test instead of skipping it
+
+jobs:
+  python:
+    name: python (lint, types, tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - uses: supabase/setup-cli@689adcfb80d947100a1eab127289b97d1fb07b13 # v3.2.0
+        with:
+          version: ${{ env.SUPABASE_CLI_VERSION }}
+      - name: Start the local Supabase stack
+        run: supabase start --workdir infra -x studio,imgproxy,vector,edge-runtime,logflare,postgres-meta,supavisor   # mailpit stays on: the auth tests read mail
+      - name: Install (frozen lockfile)
+        run: uv sync --frozen --all-packages --all-groups
+      - name: Lint, type check and test every package (make lint test)
+        run: make lint test
+      - name: Stop the stack
+        if: always()
+        run: supabase stop --workdir infra --no-backup
+
+  web:
+    name: web (lint, types, unit, build, bundle scan, Playwright)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - uses: supabase/setup-cli@689adcfb80d947100a1eab127289b97d1fb07b13 # v3.2.0
+        with:
+          version: ${{ env.SUPABASE_CLI_VERSION }}
+      - name: The Makefile and the Playwright config look for the CLI at ~/.local/bin/supabase
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$(command -v supabase)" "$HOME/.local/bin/supabase"
+      - name: Start the local Supabase stack
+        run: supabase start --workdir infra -x studio,imgproxy,vector,edge-runtime,logflare,postgres-meta,supavisor
+      - name: Install Python (the e2e harness) and web dependencies
+        run: |
+          uv sync --frozen --all-packages --all-groups
+          npm ci --prefix apps/web
+      - name: Cache Playwright browsers
+        id: browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+      - name: Install Playwright browsers
+        working-directory: apps/web
+        env:
+          CACHE_HIT: ${{ steps.browsers.outputs.cache-hit }}
+        run: |
+          if [ "$CACHE_HIT" = "true" ]; then npx playwright install-deps chromium; else npx playwright install --with-deps chromium; fi
+      - name: eslint, tsc, vitest, production build, bundle scan against this stack's keys, Playwright (make web)
+        run: make web
+      - name: Keep the Playwright traces of a failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-results
+          path: apps/web/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Stop the stack
+        if: always()
+        run: supabase stop --workdir infra --no-backup
+
+  docker:
+    name: docker (images, sandbox and filter tests, compose launch smoke)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+      - uses: supabase/setup-cli@689adcfb80d947100a1eab127289b97d1fb07b13 # v3.2.0
+        with:
+          version: ${{ env.SUPABASE_CLI_VERSION }}
+      - name: The Makefile and the smoke look for the CLI at ~/.local/bin/supabase
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          ln -sf "$(command -v supabase)" "$HOME/.local/bin/supabase"
+      - name: Install
+        run: uv sync --frozen --all-packages --all-groups
+      - name: Build every image (the worker is labelled with its source hash)
+        run: infra/docker/build.sh --all
+      - name: Sandbox tests in real containers (fail if the worker image is stale)
+        working-directory: services/orchestrator
+        run: ../../.venv/bin/python -m pytest tests -q -m docker -p no:cacheprovider
+      - name: Docker filter against the real daemon and CLI
+        working-directory: services/dockerproxy
+        run: ../../.venv/bin/python -m pytest tests -q -p no:cacheprovider
+      - name: Start the local Supabase stack
+        run: supabase start --workdir infra -x studio,imgproxy,vector,edge-runtime,logflare,postgres-meta,supavisor
+      - name: Compose launch smoke (boot the stack, scripted run and fork through the CLI, hardening, headers, key-leak checks)
+        run: make smoke
+      - name: Stop the stack
+        if: always()
+        run: supabase stop --workdir infra --no-backup
+
+  gate:
+    name: gate
+    if: always()
+    needs: [python, web, docker]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every job must have succeeded (this is the required status check)
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            [ "$r" = "success" ] || { echo "a required job did not succeed: $r"; exit 1; }
+          done

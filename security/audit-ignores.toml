@@ -1,0 +1,7 @@
+# Dependency advisories we have decided to live with, for a stated reason and a limited time. The audit job (scripts/audit_gate.py) fails when an
+# entry has no reason, has expired, or expires more than 180 days from today, so an ignore cannot quietly become permanent.
+#
+# [[ignore]]
+# id = "GHSA-xxxx-xxxx-xxxx"        # an advisory id or any of its aliases (CVE-...)
+# reason = "why this is not exploitable here, and what removes it"
+# expires = 2026-12-31
