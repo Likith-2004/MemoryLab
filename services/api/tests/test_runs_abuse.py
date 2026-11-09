@@ -126,3 +126,31 @@ def test_limiter_refund_takes_back_one_hit() -> None:
     lim.refund("k")
     assert lim.allow_all([("k", 1, 60)])
     lim.refund("never-used")                                        # no-op
+
+
+@pytest.mark.parametrize("code", ["user_busy", "ip_busy"])
+def test_an_orchestrator_slot_that_is_still_held_is_the_active_run_answer_not_a_502(env: Env, code: str) -> None:
+    """Found by the compose smoke: a fork submitted right after its parent ended reached the orchestrator before it freed the parent's
+    slot, and the API answered 502 internal. It is the same answer as an active run, with a short retry, and costs no quota."""
+    uid, game = env.user(), env.game()
+    env.orch.fail_with = UpstreamError(429, code)
+    for _ in range(7):                                      # more than the 5/h quota: a refused submit is refunded
+        r = post(env, uid, game)
+        assert (r.status_code, r.json()["code"], r.headers["retry-after"]) == (409, "rate_limited", "5")
+    assert rows(env, uid) == [("failed", "submit_refused")] * 7
+    env.orch.fail_with = None
+    assert post(env, uid, game).status_code == 202
+
+
+def test_the_client_passes_the_orchestrators_busy_codes_through_and_hides_everything_else() -> None:
+    import httpx
+
+    from api.orchestrator_client import HttpOrchestrator
+    orch = HttpOrchestrator("http://orch.test", b"o" * 40)
+    answers = {"user_busy": 429, "ip_busy": 429, "duplicate_run": 409, "weird": 500}
+    for code, status in answers.items():
+        orch._http = httpx.Client(base_url="http://orch.test", transport=httpx.MockTransport(
+            lambda request, code=code, status=status: httpx.Response(status, json={"code": code}, headers={"retry-after": "3"})))
+        with pytest.raises(UpstreamError) as exc:
+            orch.submit({"run_id": "r"})
+        assert (exc.value.status, exc.value.code) == ((status, code) if code in ("user_busy", "ip_busy") else (502, "internal"))

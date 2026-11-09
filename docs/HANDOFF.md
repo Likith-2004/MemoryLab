@@ -3,6 +3,7 @@
 Current state, updated at every milestone.
 
 ## State
+- **M1–M9 done; public launch is blocked only on the owner inputs in `BLOCKED.md`** (checklist verdicts: `docs/LAUNCH.md`). Older per-milestone notes follow.
 - Milestone 1 (emulator harness) and M1-close are implemented and tested. See CHANGELOG.md.
 - M2 memory service implemented and tested (`labharness.memory`).
 - M3 agent loop, Anthropic adapter (mock-tested only), presets, detectors implemented.
@@ -34,6 +35,15 @@ Migrations are `infra/supabase/migrations/*` (16 so far); the local password for
 
 ### Web app (M7)
 `cd apps/web && npm ci && MEMORYLAB_PUBLISHABLE_KEY=... npm run build && npm start` (Node 22+). `make web` = ruff on the harness, eslint, tsc, vitest, build, bundle scan, Playwright (needs `supabase start`; browsers via `npx playwright install chromium`). Environment (server side only; none of it is baked into the bundle): `MEMORYLAB_API_URL` (API as the web server reaches it), `MEMORYLAB_PUBLIC_API_URL` (API as browsers reach it: signed frame/export URLs and the WebSocket; the CSP is built from it), `MEMORYLAB_AUTH_URL` (GoTrue: only `/token` and `/logout`), `MEMORYLAB_PUBLISHABLE_KEY`, `MEMORYLAB_SITE_URL` (exact web origin: CSRF check, cookie flags), `MEMORYLAB_WEB_TRUSTED_HOPS` (>= 1 in production), optional `MEMORYLAB_CSP_REPORT_URI`. In production the server refuses to start if any of those URLs is plain http to a non-loopback host. The API needs `MEMORYLAB_ALLOWED_ORIGINS=<the site origin>` and `MEMORYLAB_TRUSTED_PROXY_HOPS=1`. Keep access logs off for the API's `/ws/`.
+
+### Whole stack (launch-ready)
+```bash
+supabase start --workdir infra
+infra/docker/build.sh --all        # every image (the worker is labelled with its source hash)
+make smoke                         # boots infra/compose.yaml + the smoke overlay, plays a run and a fork through the CLI, then removes everything it made
+```
+A deployment: `docker compose -p memorylab -f infra/compose.yaml --env-file <private env> up -d --wait` (variables and the secrets directory: `infra/compose.env.example`).
+Processes now also include ingest (`uvicorn --factory ingest.main:build`; `MEMORYLAB_SERVICE_DB_URL`, `MEMORYLAB_TOKEN_SECRET`, `MEMORYLAB_OBJECT_STORE`), the orchestrator (`uvicorn --factory orchestrator.main:build`; see `orchestrator/main.py` for the variables; it needs `DOCKER_HOST` pointing at `dockerproxy`, never a socket) and `dockerproxy` (`python -m dockerproxy.main --image memorylab-worker:dev --network memorylab-sandbox`). Every secret can be given as `NAME_FILE`. Launch checklist status and the deployment requirements (gateway rules, `--ws-max-size 1024`, `MEMORYLAB_WEB_TRUSTED_HOPS`, the Docker filter): `docs/LAUNCH.md`.
 
 ## Environment on this machine
 - rgbds 1.0.1 at `~/.local/opt/rgbds-1.0.1` (build tool for fixture ROMs).

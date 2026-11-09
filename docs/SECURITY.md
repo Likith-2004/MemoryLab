@@ -126,3 +126,40 @@ Playwright suite):
   non-loopback host, or if no trusted hop is configured. The CSP's `img-src`/`connect-src` are built from the same URLs.
 - **Browser bundle:** no GoTrue key at all (the web server holds the publishable key), no service-role key, no provider key: the built
   `.next` output is scanned in the gate. CSP is nonce-based without `unsafe-inline`/`unsafe-eval` in production.
+
+## U-10 Launch topology: containers, the Docker socket, secrets, networks (launch-ready)
+
+Evidence index for the launch checklist: `docs/LAUNCH.md`. Topology: `infra/compose.yaml`. Every container runs non-root (uid 10001), read-only root,
+`cap_drop: ALL`, `no-new-privileges`, with memory and pid limits; only the API and the web app publish a port (loopback by default).
+
+- **The Docker socket never reaches a service that parses requests.** The orchestrator (which accepts API requests and talks to sandboxes) has
+  `DOCKER_HOST=tcp://dockerproxy:2375` and no socket mount. `services/dockerproxy` holds the socket, on an internal network that only the
+  orchestrator joins, and is default-deny. It rebuilds each request for the daemon (one request per connection, chunked and duplicate headers
+  refused, so no smuggling) and allows only what `orchestrator/dockercmd.py` issues. A create body is handled in three steps. (1) It is parsed
+  refusing any object with two keys that are equal ignoring case, duplicates included: the daemon's JSON decoder matches field names
+  case-insensitively and a later key overrides an earlier one, so `"hostConfig": {"Privileged": true}` next to `"HostConfig"` was a host escape
+  in the first version (found in review). (2) Every level (top, HostConfig, LogConfig, RestartPolicy, Ulimits items, NetworkingConfig,
+  Labels) accepts only the exact-case fields `docker run` sends; anything else, in any case, is a 403. (3) The values are checked (image
+  `memorylab-worker:dev`, name and labels naming one run, non-root user, the sandbox network, read-only root, `CapDrop=[ALL]`,
+  `no-new-privileges`, bounded memory/pids/tmpfs, no environment but an explicit allow-list, everything else empty), and what is forwarded is a
+  NEW document built from the validated fields, serialised by us: the client's bytes never reach the daemon. Only the create call takes a body;
+  every other call with one is refused. API versions are pinned to 1.44-1.60 (only `/_ping` may go unversioned). Calls on an existing container
+  (attach/start/wait, `kill`, `rm -f`, `inspect`) are forwarded only if the daemon reports the container as ours (label and name), and `network
+  inspect` only for the sandbox network. Refused with a 403 that names the rule: privileged, any bind or mount, CapAdd, host
+  PID/IPC/UTS/user/network namespaces, devices, port publishing, extra hosts, sysctls, another image or network, `MaskedPaths: []` (which unmasks
+  `/proc`), any unclassified field, and every other endpoint (list, exec, pull, build, volumes, networks, logs, archive, events, info).
+  Tests: `services/dockerproxy/tests` (policy, case-variant/duplicate/unknown-key generated cases, a fake daemon that records the forwarded bytes, and the real daemon and CLI) and the compose smoke
+  (the same attacks from inside the orchestrator container). RESIDUAL: the filter holds the socket; see `BLOCKED.md` B-15.
+- **Secrets are files, not environment variables.** `docker inspect` shows a container's environment, and `/proc/<pid>/environ` is readable by
+  anyone with Docker or root access on the host. The token secret, orchestrator and accounts tokens, blob signing secret, log pepper, GoTrue
+  service key and both database URLs are bind-mounted read-only from a private directory under `/run/secrets` and read through `NAME_FILE`
+  (`runlog.envfile.secret_env`; setting both forms is an error). The smoke asserts none of their values is in any container's inspect output.
+  The web server's environment holds only the publishable (public) key. This model trusts the host operator.
+- **Networks.** `backend`, `dockerctl` and `sandbox` are `internal` (no route out). Sandboxes sit on `sandbox` with the egress proxy as their only
+  peer; the proxy alone also joins `backend` (to reach ingest) and `egress` (to reach the allow-listed provider host). The web server is on `edge`
+  and `upstream` only, never on `backend`. `upstream` (Postgres + GoTrue) is the Supabase CLI's flat network when run locally, so ingest/accounts/
+  API are reachable from the web container there (token-protected; documented in LAUNCH.md); with hosted Supabase it is an icc-disabled bridge.
+- **Headers.** The API sets nosniff, a `default-src 'none'; frame-ancestors 'none'` CSP, no-store, `Referrer-Policy: no-referrer`, a restrictive
+  `Permissions-Policy` and HSTS on every response including the 500 the server-error layer answers (that layer sits outside the middleware,
+  which the launch test found); a 500 is a generic problem document with an incident id. The web app sets the nonce CSP and the rest in `next.config.ts`/`proxy.ts`.
+  Tests: `services/api/tests/test_security_headers.py`, `apps/web/e2e/security.spec.ts`, and the smoke against the live containers.

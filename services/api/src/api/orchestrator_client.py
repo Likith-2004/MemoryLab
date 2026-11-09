@@ -32,7 +32,7 @@ class KeyValidator(Protocol):
 
 
 _NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.UnsupportedProtocol)
-_PASS_THROUGH = {"caps_exceed_limit", "capacity_full", "rate_limited", "breaker_open", "validation_failed"}
+_PASS_THROUGH = {"caps_exceed_limit", "capacity_full", "rate_limited", "breaker_open", "validation_failed", "user_busy", "ip_busy"}
 
 
 class HttpOrchestrator:

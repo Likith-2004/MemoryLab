@@ -3,6 +3,8 @@
 import os
 from dataclasses import dataclass, field
 
+from runlog.envfile import secret_env
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -39,12 +41,12 @@ class Settings:
             issuer=os.environ["MEMORYLAB_JWT_ISSUER"],       # required: an unset issuer would leave `iss` unchecked
             auth_url=os.environ.get("MEMORYLAB_AUTH_URL", cls.auth_url),
             auth_apikey=os.environ.get("MEMORYLAB_AUTH_APIKEY", ""),
-            db_url=os.environ.get("MEMORYLAB_DB_URL", cls.db_url),
+            db_url=secret_env("MEMORYLAB_DB_URL", os.environ, cls.db_url),
             orchestrator_url=os.environ.get("MEMORYLAB_ORCHESTRATOR_URL", cls.orchestrator_url),
-            orchestrator_token=os.environ.get("MEMORYLAB_ORCHESTRATOR_TOKEN", "").encode(),
+            orchestrator_token=secret_env("MEMORYLAB_ORCHESTRATOR_TOKEN", os.environ, "").encode(),
             accounts_url=os.environ.get("MEMORYLAB_ACCOUNTS_URL", cls.accounts_url),
-            accounts_token=os.environ.get("MEMORYLAB_ACCOUNTS_TOKEN", "").encode(),
-            blob_signing_secret=os.environ.get("MEMORYLAB_BLOB_SIGNING_SECRET", "").encode(),
+            accounts_token=secret_env("MEMORYLAB_ACCOUNTS_TOKEN", os.environ, "").encode(),
+            blob_signing_secret=secret_env("MEMORYLAB_BLOB_SIGNING_SECRET", os.environ, "").encode(),
             public_api_url=os.environ.get("MEMORYLAB_PUBLIC_API_URL", cls.public_api_url),
             allowed_origins=tuple(o for o in os.environ.get("MEMORYLAB_ALLOWED_ORIGINS", "").split(",") if o),
             fork_enabled=os.environ.get("MEMORYLAB_FORK_ENABLED", "1") != "0",
@@ -54,7 +56,7 @@ class Settings:
 
 
 def _pepper(env: os._Environ[str]) -> bytes:
-    value = env.get("MEMORYLAB_LOG_PEPPER", "")
+    value = secret_env("MEMORYLAB_LOG_PEPPER", env, "")
     if len(value) < 16:
         raise KeyError("MEMORYLAB_LOG_PEPPER (at least 16 characters)")
     return value.encode()

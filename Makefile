@@ -1,8 +1,8 @@
 # Local gate commands. Everything runs on this machine; nothing is deployed.
 BIN := $(CURDIR)/.venv/bin
-PKGS := packages/labharness packages/runlog services/ingest services/egressproxy services/worker services/orchestrator services/api services/accounts packages/cli
+PKGS := packages/labharness packages/runlog services/ingest services/egressproxy services/dockerproxy services/worker services/orchestrator services/api services/accounts packages/cli
 
-.PHONY: sync test lint secrets gate web
+.PHONY: sync test lint secrets gate web images smoke launch
 sync:
 	uv sync --all-packages --all-groups
 
@@ -28,3 +28,13 @@ web:
 
 gate: export MEMORYLAB_REQUIRE_DB=1
 gate: lint test web secrets
+
+# Launch readiness (docs/LAUNCH.md): build every image, then boot the whole stack from infra/compose.yaml and play a scripted run and a
+# fork through the CLI, with the header, hardening and key-leak checks. Needs `supabase start --workdir infra` and Docker.
+images:
+	infra/docker/build.sh --all
+
+smoke:
+	$(BIN)/python scripts/launch_smoke.py
+
+launch: images smoke

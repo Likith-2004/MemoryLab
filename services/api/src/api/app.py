@@ -177,7 +177,7 @@ class UnverifyIn(Body):
     reason: str = Field(min_length=1, max_length=500)
 
 
-_REFUNDED_REFUSALS = ("capacity_full", "breaker_open")
+_REFUNDED_REFUSALS = ("capacity_full", "breaker_open", "user_busy", "ip_busy")
 
 
 class NotFound(Exception):
@@ -255,6 +255,18 @@ class ApiError(Exception):
         self.status, self.code, self.title, self.headers = status, code, title, headers
 
 
+# On every response, including the 500 the server-error layer answers (it sits outside the middleware). The API serves JSON and
+# redirects, never a page, so the CSP is the strictest one. HSTS is ignored over plain http, so it is safe to send in development.
+SECURITY_HEADERS = {
+    "x-content-type-options": "nosniff",
+    "cache-control": "no-store",
+    "content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+    "referrer-policy": "no-referrer",
+    "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()",
+    "strict-transport-security": "max-age=63072000; includeSubDomains",
+}
+
+
 def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orchestrator: OrchestratorClient,
                key_validator: KeyValidator, session_checker: SessionChecker, auth_gateway: AuthGateway,
                accounts: AccountsClient, store: ObjectStore | None = None, signer: UrlSigner | None = None, mail_jobs: MailJobs | None = None,
@@ -270,9 +282,8 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     @app.middleware("http")
     async def headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         resp = await call_next(request)
-        resp.headers.setdefault("x-content-type-options", "nosniff")
-        resp.headers.setdefault("cache-control", "no-store")
-        resp.headers.setdefault("content-security-policy", "default-src 'none'; frame-ancestors 'none'")
+        for name, value in SECURITY_HEADERS.items():
+            resp.headers.setdefault(name, value)
         return resp
 
     @app.exception_handler(ApiError)
@@ -301,7 +312,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
         incident = secrets.token_hex(6)
         log.error("unhandled error incident=%s type=%s", incident, type(exc).__name__)
         return JSONResponse({"type": "about:blank", "title": "Internal error", "status": 500, "code": "internal",
-                             "incident": incident}, status_code=500, media_type="application/problem+json")
+                             "incident": incident}, status_code=500, media_type="application/problem+json", headers=SECURITY_HEADERS)
 
     # ------------------------------------------------------------ dependencies
 
@@ -537,6 +548,10 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
                 conn.commit()
                 Database.apply_identity(conn, user)
                 refund = isinstance(exc, UpstreamError) and exc.code in _REFUNDED_REFUSALS
+                if isinstance(exc, UpstreamError) and exc.code in ("user_busy", "ip_busy"):
+                    # the orchestrator frees a finished run's slot a moment after the run row turns final: the same answer as an
+                    # active run, with a short retry (it surfaced as a 502 when a fork was submitted right after its parent ended)
+                    raise ApiError(409, "rate_limited", "You already have an active run", {"retry-after": "5"}) from None
                 raise
             return {"run_id": run_id, "status": "queued"}
         finally:
