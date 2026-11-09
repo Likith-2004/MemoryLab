@@ -2,6 +2,13 @@
 
 Format per milestone: scope, changes, tests/evidence, deviations, tag.
 
+## CI and supply chain (branch `ci`, after `m9-done`)
+
+- `.github/workflows`: `ci.yml` (python, web, docker, `gate`), `security.yml` (gitleaks history, CodeQL, pip-audit/npm audit/osv-scanner, hadolint, trivy config and images, actionlint, zizmor, `security`), `scorecard.yml`, `release.yml` (GHCR, SPDX SBOM, cosign, provenance); `dependabot.yml`.
+- `.gitleaks.toml` allowlists exact fake values instead of files; `security/audit-ignores.toml` + `scripts/audit_gate.py` (ignores need a reason and an expiry).
+- Images: no pip/npm in runtime images, zlib security update, hadolint justifications; `build.sh --only NAME`.
+- Root `SECURITY.md`, `CONTRIBUTING.md`, `.github/CODEOWNERS`, PR template, issue forms; README rewritten; BLOCKED B-16 (licence). docs/SECURITY.md "CI and supply chain" lists the owner-side repository settings. Nothing has run on GitHub yet.
+
 ## Launch readiness (branch `launch-ready`, after `m8-done`)
 
 - Entrypoints for ingest and the orchestrator; Dockerfiles for ingest, api, accounts, orchestrator (with the Docker CLI), reaper, web and the Docker filter; `infra/docker/build.sh --all`.
