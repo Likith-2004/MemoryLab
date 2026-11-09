@@ -72,8 +72,15 @@ class Stack:
 
     def up(self) -> None:
         self.thread.start()
-        deadline = time.time() + 20
-        while time.time() < deadline and not httpx.get(f"http://127.0.0.1:{self.port}/healthz", timeout=2).is_success:
+        deadline = time.time() + 30
+        while True:
+            # the server thread may not be listening yet: a refused connection means "not yet", not a failure (this raced and failed a gate run)
+            try:
+                if httpx.get(f"http://127.0.0.1:{self.port}/healthz", timeout=2).is_success:
+                    break
+            except httpx.TransportError:
+                pass
+            assert time.time() < deadline, "the test ingest server did not come up"
             time.sleep(0.1)
         label = f"{OWNER_LABEL}={OWNER_VALUE}"
         docker("network", "create", "--internal", "--label", label, self.net)
