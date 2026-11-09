@@ -28,9 +28,11 @@ test("sign in, reach the run and use every control with the keyboard alone", asy
   await page.keyboard.press("]");
   await expect(slider).toHaveValue("2");                                  // the first memory write
   await page.keyboard.press("]");
+  await expect(slider).toHaveValue("4");                                  // the dream job's rewrite at the session boundary
+  await page.keyboard.press("]");
   await expect(slider).toHaveValue("5");
   await page.keyboard.press("[");
-  await expect(slider).toHaveValue("2");
+  await expect(slider).toHaveValue("4");
 
   // open the memory drawer from the keyboard, Escape closes it and focus returns to the control that opened it
   const file = page.getByRole("button", { name: /notes\/a\.md/ });
