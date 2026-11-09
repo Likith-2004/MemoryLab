@@ -32,6 +32,7 @@ class Job:
     api_key: SecretKey | None
     fake_script: list[dict[str, Any]] | None
     heartbeat_s: float
+    parent: dict[str, Any] | None = None   # a fork: {run_id, checkpoint_id, step}; the worker fetches the rest from ingest
 
 
 def _need(doc: dict[str, Any], key: str, kind: type | tuple[type, ...]) -> Any:
@@ -50,7 +51,7 @@ def parse_spec(raw: bytes, *, allow_fake: bool) -> Job:
         raise SpecError("spec is not valid JSON") from None
     if not isinstance(doc, dict) or doc.get("v") != 1:
         raise SpecError("unsupported spec")
-    if set(doc) - {"v", "run_id", "game", "run_config", "preset_text", "ingest", "provider", "heartbeat_s"}:
+    if set(doc) - {"v", "run_id", "game", "run_config", "preset_text", "ingest", "provider", "heartbeat_s", "parent"}:
         raise SpecError("unknown spec fields")
     run_id = _need(doc, "run_id", str)
     game = _need(doc, "game", str)
@@ -91,7 +92,10 @@ def parse_spec(raw: bytes, *, allow_fake: bool) -> Job:
     heartbeat = doc.get("heartbeat_s", 10.0)
     if isinstance(heartbeat, bool) or not isinstance(heartbeat, int | float) or not 0.05 <= heartbeat <= 60:
         raise SpecError("bad heartbeat_s")
-    return Job(run_id, game, config, preset_text, url, _secret(token), proxy, name, key, script, float(heartbeat))
+    parent = doc.get("parent")
+    if parent is not None and not _valid_parent(parent):
+        raise SpecError("bad parent section")
+    return Job(run_id, game, config, preset_text, url, _secret(token), proxy, name, key, script, float(heartbeat), parent)
 
 
 def _secret(value: object) -> SecretKey:
@@ -99,3 +103,9 @@ def _secret(value: object) -> SecretKey:
         return SecretKey(value)  # type: ignore[arg-type]
     except ValueError:
         raise SpecError("a secret has an invalid shape") from None
+
+
+def _valid_parent(parent: object) -> bool:
+    return (isinstance(parent, dict) and set(parent) == {"run_id", "checkpoint_id", "step"} and isinstance(parent["run_id"], str)
+            and _RUN_ID.fullmatch(parent["run_id"]) is not None and isinstance(parent["step"], int) and not isinstance(parent["step"], bool)
+            and isinstance(parent["checkpoint_id"], str) and len(parent["checkpoint_id"]) <= 64)

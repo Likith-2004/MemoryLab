@@ -53,6 +53,7 @@ class RunRequest:
     key_box: KeyBox
     fake_script: list[dict[str, Any]] | None
     submitted_at: float
+    parent: dict[str, Any] | None = None   # a fork: {run_id, checkpoint_id, step}
 
 
 @dataclass(frozen=True)

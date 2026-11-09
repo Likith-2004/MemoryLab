@@ -303,9 +303,17 @@ def test_the_function_refuses_a_parent_checkpoint_the_caller_cannot_see(env: Env
                       ("c" * 64, secret_cp))
 
 
-def test_fork_is_disabled_by_default_and_costs_nothing(make_env: Any) -> None:
+def test_fork_can_be_switched_off_and_then_costs_nothing(make_env: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     from api.settings import Settings
-    assert Settings(jwks_url="x").fork_enabled is False
+    assert Settings(jwks_url="x").fork_enabled is True              # on since M8: the worker resumes from checkpoints
+    for base in ("MEMORYLAB_JWKS_URL", "MEMORYLAB_JWT_ISSUER"):
+        monkeypatch.setenv(base, "x")
+    monkeypatch.setenv("MEMORYLAB_LOG_PEPPER", "p" * 20)
+    monkeypatch.delenv("MEMORYLAB_FORK_ENABLED", raising=False)
+    assert Settings.from_env().fork_enabled is True
+    for value, expect in (("0", False), ("1", True), ("", True)):
+        monkeypatch.setenv("MEMORYLAB_FORK_ENABLED", value)
+        assert Settings.from_env().fork_enabled is expect
     env: Env = make_env(fork_enabled=False)
     owner, game = env.user(), env.game()
     run, cp = source(env, owner, game)

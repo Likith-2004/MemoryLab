@@ -187,3 +187,18 @@ def test_a_rejected_batch_leaves_no_rows_behind(pg: Env, admin: psycopg.Connecti
     assert again.status_code == 200
     n = admin.execute("select count(*) n from public.run_events_index where run_id = %s", (rid,)).fetchone()["n"]  # type: ignore[index]
     assert n == before + 1
+
+
+def test_checkpoints_are_rows_and_a_forks_parent_is_found_through_the_database_link(
+        repo: PostgresRunRepository, make_run: Any, admin: psycopg.Connection[dict[str, Any]]) -> None:
+    from ingest.repository import ParentRef
+    parent, child = make_run(), make_run()
+    cid = repo.add_checkpoint(parent, {"step": 7, "savestate_key": f"runs/{parent}/checkpoints/0000007.state", "memory_version": 3,
+                                       "transcript_offset": 42, "config_hash": "e" * 64})
+    row = admin.execute("select step, savestate_key, memory_version, transcript_offset, config_hash from public.checkpoints where id = %s",
+                        (cid,)).fetchone()
+    assert row == {"step": 7, "savestate_key": f"runs/{parent}/checkpoints/0000007.state", "memory_version": 3, "transcript_offset": 42,
+                   "config_hash": "e" * 64}
+    assert repo.parent_of(child) is None and repo.parent_of(str(uuid.uuid4())) is None
+    admin.execute("update public.runs set parent_checkpoint_id = %s where id = %s", (cid, child))
+    assert repo.parent_of(child) == ParentRef(parent, 7, 42, str(cid))

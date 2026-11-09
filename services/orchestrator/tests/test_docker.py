@@ -324,3 +324,37 @@ def test_docker_helpers_touch_only_our_own_named_containers(monkeypatch: pytest.
                      ["docker", "kill", f"memorylab-run-{run_id}"]]
     with pytest.raises(ValueError):
         dockercmd.remove_container(cfg, "sbam-run-worker-1")                           # another project's name is refused outright
+
+
+def test_a_fork_resumes_from_its_parents_checkpoint_in_real_containers(stack: Stack) -> None:
+    """B-6 end to end: the real orchestrator, two real sandboxes (parent, then child), the real ingest service and the real emulator."""
+    from ingest.repository import ParentRef
+    cfg = {**RUN_CONFIG, "caps": {"max_steps": 4}, "sessions": {"session_len": 2}}
+    steps = [{"calls": [["press", {"buttons": ["Right"], "hold_frames": 1}]] + ([["mem_write", {"path": "notes/a.md", "content": "door\n"}]] if i == 0 else []),
+              "text": f"s{i + 1}", "tokens": 100} for i in range(4)]
+    parent = stack.register()
+    orch = stack.orch()
+    orch.submit(submission(parent, run_config=cfg, provider={"name": "fake", "api_key": CANARY, "script": steps}))
+    orch.tick()
+    assert orch.wait_idle(240)
+    assert states(stack, parent)[-1] == ("capped", "steps")
+    parent_events = list(EventLogReader(stack.store, parent).iter_events())
+    cp = next(e for e in parent_events if e.type == "checkpoint" and e.step == 2)
+
+    child = str(uuid.uuid4())
+    stack.repo.register(child, parent=ParentRef(parent, 2, cp.seq, "cp-1"))
+    sub = submission(child, run_config=cfg, provider={"name": "fake", "api_key": CANARY, "script": steps[2:]})
+    sub = type(sub)(**{**sub.__dict__, "parent": {"run_id": parent, "checkpoint_id": "cp-1", "step": 2}})
+    orch2 = stack.orch()
+    orch2.submit(sub)
+    orch2.tick()
+    assert orch2.wait_idle(240)
+    assert states(stack, child)[-1] == ("capped", "steps"), states(stack, child)
+    child_events = list(EventLogReader(stack.store, child).iter_events())
+    assert verify_log(child_events) == [] and verify_bundle(stack.store.get(f"runs/{child}/bundle.zip")).ok
+    last = lambda evs: [e for e in evs if e.type == "obs"][-1].data
+    assert last(child_events)["ram_sha256"] == last(parent_events)["ram_sha256"]            # same emulator state after the same steps
+    assert next(e for e in child_events if e.type == "fork.start").data["parent_run_id"] == parent
+    assert docker("ps", "-aq", "--filter", f"label=memorylab.run={child}").stdout.split() == []
+    blob = b"".join(p.read_bytes() for p in stack.store.root.rglob("*") if p.is_file())
+    assert CANARY.encode() not in blob

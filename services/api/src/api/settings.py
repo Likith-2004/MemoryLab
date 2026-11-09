@@ -28,7 +28,7 @@ class Settings:
     allowed_origins: tuple[str, ...] = ()       # WebSocket Origin allowlist; empty = no socket is accepted
     ws_poll_s: float = 1.0                      # how often a socket looks for new events
     ws_heartbeat_s: float = 15.0                # heartbeat and visibility re-check period
-    fork_enabled: bool = False                  # the worker cannot start from a checkpoint yet (BLOCKED.md B-6)
+    fork_enabled: bool = True                   # on since M8: the worker resumes from a checkpoint (tested with real containers); MEMORYLAB_FORK_ENABLED=0 turns it off
     log_pepper: bytes = field(default=b"", repr=False)   # keys the address tags in logs (MEMORYLAB_LOG_PEPPER)
     trusted_proxy_hops: int = 0       # proxies in front of the API whose X-Forwarded-For entry is trusted
 
@@ -47,7 +47,7 @@ class Settings:
             blob_signing_secret=os.environ.get("MEMORYLAB_BLOB_SIGNING_SECRET", "").encode(),
             public_api_url=os.environ.get("MEMORYLAB_PUBLIC_API_URL", cls.public_api_url),
             allowed_origins=tuple(o for o in os.environ.get("MEMORYLAB_ALLOWED_ORIGINS", "").split(",") if o),
-            fork_enabled=os.environ.get("MEMORYLAB_FORK_ENABLED") == "1",
+            fork_enabled=os.environ.get("MEMORYLAB_FORK_ENABLED", "1") != "0",
             log_pepper=_pepper(os.environ),
             trusted_proxy_hops=int(os.environ.get("MEMORYLAB_TRUSTED_PROXY_HOPS", "0")),
         )

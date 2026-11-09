@@ -17,7 +17,7 @@ from psycopg_pool import ConnectionPool
 from runlog.eventlog import IndexEntry
 from runlog.lifecycle import FINAL
 
-from .repository import RunRecord
+from .repository import ParentRef, RunRecord
 
 Conn = Connection[dict[str, Any]]
 
@@ -110,6 +110,22 @@ class PostgresRunRepository:
                 "values (%s, %s, %s, %s, %s, %s, %s, %s)",
                 [(run_id, r["path"], r["version"], r["step"], r["rev"], r["content"], r["chars"], r["deleted"])
                  for r in rows])
+
+
+    def add_checkpoint(self, run_id: str, row: dict[str, Any]) -> str:
+        with self._conn() as conn:
+            got = conn.execute(
+                "insert into public.checkpoints (run_id, step, savestate_key, memory_version, transcript_offset, config_hash) "
+                "values (%s, %s, %s, %s, %s, %s) returning id",
+                (run_id, row["step"], row["savestate_key"], row["memory_version"], row["transcript_offset"], row["config_hash"])).fetchone()
+        return str(got["id"])  # type: ignore[index]
+
+    def parent_of(self, run_id: str) -> ParentRef | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "select c.id, c.run_id, c.step, c.transcript_offset from public.runs r "
+                "join public.checkpoints c on c.id = r.parent_checkpoint_id where r.id = %s", (run_id,)).fetchone()
+        return None if row is None else ParentRef(str(row["run_id"]), int(row["step"]), int(row["transcript_offset"]), str(row["id"]))
 
 
 def _ts(value: str) -> datetime:

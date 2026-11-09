@@ -117,7 +117,7 @@ class ForkIn(Body):
 
 # the top-level fields of a run configuration: an experiment's variable is one of them
 EXPERIMENT_VARIABLES = frozenset({"provider", "model_id", "preset_ref", "memory", "inject_path", "inject_cap_chars",
-                                  "observation", "screenshots", "caps", "mode"})
+                                  "observation", "screenshots", "caps", "sessions", "mode"})
 
 
 class ExperimentIn(Body):
@@ -557,8 +557,7 @@ def create_app(settings: Settings, *, verifier: JwtVerifier, db: Database, orche
     def fork_run(user: Authed, run: Run, body: ForkIn, request: Request, conn: Sess) -> dict[str, Any]:
         """A new run that starts from one of this run's checkpoints, with its config changed by `config_patch`.
         The caller must be able to see the run; the checkpoint must belong to it (same 404 as a missing one); the
-        parent checkpoint is set here, never taken from the body. Disabled by default: the orchestrator would refuse the
-        submit after the quota and key check were spent."""
+        parent checkpoint is set here, never taken from the body. Disabled by default: kept as an operator switch (MEMORYLAB_FORK_ENABLED=0)."""
         if not settings.fork_enabled:
             raise ApiError(422, "validation_failed", "forking is not available yet")
         ip = _ip_hash(client_ip(request), salt)
