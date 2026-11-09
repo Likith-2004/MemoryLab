@@ -57,6 +57,13 @@ def run(argv: list[str], check: bool = False, **kw: Any) -> subprocess.Completed
     return subprocess.run(argv, check=check, capture_output=True, text=True, **kw)
 
 
+# The Supabase stack to run against (defaults: this repo's `supabase start --workdir infra`); override for any other stack.
+DB_HOST = os.environ.get("SMOKE_DB_HOST", "supabase_db_memorylab")
+KONG_HOST = os.environ.get("SMOKE_KONG_HOST", "supabase_kong_memorylab")
+UPSTREAM = os.environ.get("SMOKE_UPSTREAM_NETWORK", "supabase_network_memorylab")
+HOST_DB_URL = os.environ.get("SMOKE_HOST_DB_URL", "postgresql://postgres:postgres@127.0.0.1:54322/postgres")
+
+
 def supabase_env() -> dict[str, str]:
     out = run([str(Path.home() / ".local/bin/supabase"), "status", "--workdir", str(ROOT / "infra"), "-o", "env"], check=True).stdout
     return {k: v.strip('"') for k, _, v in (line.partition("=") for line in out.splitlines()) if _}
@@ -70,15 +77,15 @@ def main() -> None:
         "MEMORYLAB_TOKEN_SECRET": secrets.token_hex(32), "MEMORYLAB_ORCHESTRATOR_TOKEN": secrets.token_hex(32),
         "MEMORYLAB_ACCOUNTS_TOKEN": secrets.token_hex(32), "MEMORYLAB_BLOB_SIGNING_SECRET": secrets.token_hex(32),
         "MEMORYLAB_LOG_PEPPER": secrets.token_hex(16),
-        "MEMORYLAB_SERVICE_DB_URL": "postgresql://postgres:postgres@supabase_db_memorylab:5432/postgres",
-        "MEMORYLAB_API_DB_URL": "postgresql://memorylab_api:memorylab-api-local@supabase_db_memorylab:5432/postgres",
-        "MEMORYLAB_AUTH_URL_INTERNAL": "http://supabase_kong_memorylab:8000/auth/v1",
-        "MEMORYLAB_JWKS_URL_INTERNAL": "http://supabase_kong_memorylab:8000/auth/v1/.well-known/jwks.json",
+        "MEMORYLAB_SERVICE_DB_URL": f"postgresql://postgres:postgres@{DB_HOST}:5432/postgres",
+        "MEMORYLAB_API_DB_URL": f"postgresql://memorylab_api:memorylab-api-local@{DB_HOST}:5432/postgres",
+        "MEMORYLAB_AUTH_URL_INTERNAL": f"http://{KONG_HOST}:8000/auth/v1",
+        "MEMORYLAB_JWKS_URL_INTERNAL": f"http://{KONG_HOST}:8000/auth/v1/.well-known/jwks.json",
         "MEMORYLAB_JWT_ISSUER": sb["API_URL"] + "/auth/v1", "MEMORYLAB_AUTH_SERVICE_KEY": sb["SECRET_KEY"],
         "MEMORYLAB_PUBLISHABLE_KEY": sb["PUBLISHABLE_KEY"],
         "MEMORYLAB_PUBLIC_API_URL": f"http://127.0.0.1:{API_PORT}", "MEMORYLAB_SITE_URL": f"http://localhost:{WEB_PORT}",
         "MEMORYLAB_API_BIND": f"127.0.0.1:{API_PORT}", "MEMORYLAB_WEB_BIND": f"127.0.0.1:{WEB_PORT}",
-        "DOCKER_GID": gid, "SMOKE_PROVIDER_KEY": SMOKE_KEY,
+        "DOCKER_GID": gid, "UPSTREAM_NETWORK": UPSTREAM, "MEMORYLAB_INTERNAL_HTTP_HOSTS": f"api,{KONG_HOST}", "SMOKE_PROVIDER_KEY": SMOKE_KEY,
     }
     secrets_dir = tmp / "secrets"
     secrets_dir.mkdir(mode=0o700)
@@ -95,7 +102,7 @@ def main() -> None:
     with os.fdopen(fd, "w") as f:
         f.write("".join(f"{k}={v}\n" for k, v in env.items()))
     compose = ["docker", "compose", "--env-file", str(env_file), *COMPOSE]
-    admin = psycopg.connect("postgresql://postgres:postgres@127.0.0.1:54322/postgres", autocommit=True)
+    admin = psycopg.connect(HOST_DB_URL, autocommit=True)
     secret_hdr = {"apikey": sb["SECRET_KEY"], "authorization": "Bearer " + sb["SECRET_KEY"]}
     auth = sb["API_URL"] + "/auth/v1"
     email, password = f"smoke-{uuid.uuid4().hex[:8]}@smoke.test", "smoke-" + secrets.token_hex(8)
@@ -176,7 +183,7 @@ def main() -> None:
         # the orchestrator, the Docker filter or the egress proxy (those are on internal networks it is not attached to)
         web_info = json.loads(run(["docker", "inspect", next(r["ID"] for r in rows if r["Service"] == "web")]).stdout)[0]
         joined = sorted(n.removeprefix(PROJECT + "_") for n in web_info["NetworkSettings"]["Networks"])
-        if joined != sorted(["edge", "supabase_network_memorylab"]):
+        if joined != sorted(["edge", UPSTREAM]):
             fail(f"the web container is attached to {joined}, expected edge and the upstream network only")
         for host in ("orchestrator", "dockerproxy", "egress"):
             probe = run([*compose, "exec", "-T", "web", "node", "-e", f"require('dns').lookup('{host}',(e)=>process.exit(e?0:1))"])

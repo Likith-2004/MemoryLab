@@ -3,6 +3,7 @@
 Current state, updated at every milestone.
 
 ## State
+- **M1–M9 done; public launch is blocked only on the owner inputs in `BLOCKED.md`** (checklist verdicts: `docs/LAUNCH.md`). Older per-milestone notes follow.
 - Milestone 1 (emulator harness) and M1-close are implemented and tested. See CHANGELOG.md.
 - M2 memory service implemented and tested (`labharness.memory`).
 - M3 agent loop, Anthropic adapter (mock-tested only), presets, detectors implemented.
