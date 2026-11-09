@@ -332,6 +332,15 @@ describe("production configuration guard", () => {
     expect(problems).toHaveLength(3);
     expect(problems.join()).toMatch(/apiUrl.*publicApiUrl.*siteUrl|publicApiUrl/s);
   });
+  it("allows plain http to a listed internal host for the server-side URLs only", () => {
+    const e = { ...ok, apiUrl: "http://api:8000", authUrl: "http://kong:8000/auth/v1" };
+    expect(productionProblems(e)).toHaveLength(2);
+    expect(productionProblems(e, ["api", "kong"])).toEqual([]);
+    expect(productionProblems(e, ["API", "kong"])).toEqual([]);                                          // hostnames are case-insensitive
+    expect(productionProblems({ ...e, publicApiUrl: "http://api:8000" }, ["api", "kong"])).toHaveLength(1);  // never for what a browser sees
+    expect(productionProblems({ ...e, siteUrl: "http://api:3000" }, ["api", "kong"])).toHaveLength(1);
+    expect(productionProblems({ ...e, apiUrl: "http://api.evil.example:8000" }, ["api", "kong"])).toHaveLength(1);   // exact match, not a suffix
+  });
   it("webEnv refuses to start in production with a plain-http remote origin", async () => {
     const { webEnv } = await import("@/lib/env");
     vi.stubEnv("NODE_ENV", "production");
