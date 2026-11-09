@@ -132,3 +132,33 @@ def test_the_worker_writes_nothing_to_its_working_directory(env: Env, tmp_path: 
     run_main(env, env.line(env.run()))
     assert os.listdir(cwd) == []
     assert threading.active_count() >= 1
+
+
+def test_no_background_thread_writes_after_main_returns_and_the_caller_closes_stdout(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: a heartbeat that had passed its `done` check just before the run ended could still write after main returned and the
+    caller closed stdout ('I/O operation on closed file', raised in a thread). main now waits for the heartbeat thread."""
+    seen: list[str] = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: seen.append(f"{args.exc_type.__name__}: {args.exc_value}"))
+
+    class LateEvent(threading.Event):
+        """wait() answers 'not set' once more after set(): the thread was already past its check when the run ended."""
+
+        stale_given = False
+
+        def wait(self, timeout: float | None = None) -> bool:
+            time.sleep(timeout or 0)
+            if self.is_set() and not self.stale_given:
+                self.stale_given = True
+                return False
+            return self.is_set()
+
+    class Shim:
+        Thread, Lock, Event = threading.Thread, threading.Lock, LateEvent
+
+    monkeypatch.setattr(worker_main, "threading", Shim)
+    run_id = env.run()
+    out = io.StringIO()
+    assert main(env.line(run_id, heartbeat_s=0.2), out, http_client=env.client, games_dir=GAMES) == 0
+    out.close()                                                   # what the caller (a test, the orchestrator's pipe owner) does next
+    time.sleep(0.6)                                               # a straggler would write to the closed stream now
+    assert seen == []

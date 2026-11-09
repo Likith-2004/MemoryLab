@@ -145,3 +145,29 @@ def test_tokens_from_dream_calls_update_the_run_record_and_dream_writes_become_m
 def test_the_default_limits_hold_a_real_checkpoint(tmp_path) -> None:  # type: ignore[no-untyped-def]
     e = make_env(tmp_path)
     assert e.service.limits.max_checkpoint_state_bytes >= 2 * 1024 * 1024 and e.service.limits.max_body_bytes > e.service.limits.max_checkpoint_state_bytes
+
+
+def test_checkpoint_uploads_have_a_per_run_quota_counted_at_upload_per_distinct_step(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from ingest.service import Limits
+    e = make_env(tmp_path, Limits(max_checkpoints_per_run=3))
+    run = e.run()
+    e.start(run)
+    for step in (1, 2, 3):                                                                   # three orphan uploads, no checkpoint event
+        assert put(e, run, step, "state", STATE).status_code == 200
+    r = put(e, run, 4, "state", STATE)
+    assert r.status_code == 429 and r.json()["code"] == "quota_exceeded" and not e.store.exists(f"runs/{run}/checkpoints/0000004.state")
+    assert put(e, run, 4, "context", json.dumps(CTX).encode()).status_code == 429
+    assert e.repo.get(run).checkpoints == 3                                                   # type: ignore[union-attr]
+    # an idempotent re-upload and the context blob of a known step cost nothing; a different blob is still a conflict
+    assert put(e, run, 2, "state", STATE).status_code == 200 and e.repo.get(run).checkpoints == 3  # type: ignore[union-attr]
+    assert put(e, run, 2, "context", json.dumps(CTX).encode()).status_code == 200 and e.repo.get(run).checkpoints == 3  # type: ignore[union-attr]
+    assert put(e, run, 2, "state", STATE + b"x").status_code == 409
+    assert put(e, run, 4, "state", STATE).status_code == 429                                  # still full
+    other = e.run()
+    e.start(other)
+    assert put(e, other, 4, "state", STATE).status_code == 200                                # the quota is per run
+
+
+def test_the_default_checkpoint_quota_is_bounded() -> None:
+    from ingest.service import Limits
+    assert 1 <= Limits().max_checkpoints_per_run <= 200

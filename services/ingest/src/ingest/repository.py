@@ -18,6 +18,7 @@ class RunRecord:
     event_count: int = 0
     bytes_total: int = 0
     frames: int = 0
+    checkpoints: int = 0       # distinct steps with an uploaded checkpoint blob (quota)
     tokens: int = 0
     steps: int = 0
     score: int = 0

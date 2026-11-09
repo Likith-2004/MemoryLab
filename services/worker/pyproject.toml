@@ -26,6 +26,7 @@ packages = ["src/worker"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning", "error::pytest.PytestUnhandledThreadExceptionWarning"]
 
 [tool.ruff]
 line-length = 100

@@ -75,7 +75,7 @@ def test_save_and_get_round_trip_and_final_state_closes_the_run_row(
         repo: PostgresRunRepository, make_run: Any, admin: psycopg.Connection[dict[str, Any]]) -> None:
     rid = make_run()
     rec = RunRecord(rid, status="running", next_batch_no={"worker": 4, "orchestrator": 2}, event_count=7, bytes_total=99,
-                    frames=2, tokens=500, steps=6, score=3, last_ack={"worker": {"batch_no": 3, "accepted": 2}})
+                    frames=2, checkpoints=5, tokens=500, steps=6, score=3, last_ack={"worker": {"batch_no": 3, "accepted": 2}})
     repo.save(rec)
     assert repo.get(rid) == rec
     row = admin.execute("select status, steps, tokens, started_at, ended_at from public.runs where id = %s", (rid,)).fetchone()

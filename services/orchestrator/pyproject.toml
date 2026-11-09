@@ -25,6 +25,7 @@ packages = ["src/orchestrator"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning", "error::pytest.PytestUnhandledThreadExceptionWarning"]
 markers = ["docker: needs a local Docker daemon and builds/uses images labelled memorylab.owner"]
 
 [tool.ruff]

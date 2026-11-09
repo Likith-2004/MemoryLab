@@ -73,6 +73,7 @@ class Limits:
     max_frame_bytes: int = 256 * 1024
     max_manifest_bytes: int = 64 * 1024
     max_body_bytes: int = 4 * 1024 * 1024
+    max_checkpoints_per_run: int = 200
     max_checkpoint_state_bytes: int = 3 * 1024 * 1024
     max_checkpoint_context_bytes: int = 1024 * 1024
     max_parent_payload_bytes: int = 24 * 1024 * 1024
@@ -210,11 +211,19 @@ class IngestService:
             record = self._record(run_id)
             if record.closed or record.status in FINAL:
                 raise Conflict("the run has ended")
+            key = self._cp_key(run_id, step, kind)
+            known_step = self.store.exists(self._cp_key(run_id, step, "state")) or self.store.exists(self._cp_key(run_id, step, "context"))
+            if not known_step and record.checkpoints >= self.limits.max_checkpoints_per_run:
+                raise QuotaExceeded("checkpoint quota for this run is used up")      # counted per distinct step, at upload, orphans included
             try:
-                self.store.put(self._cp_key(run_id, step, kind), data)
+                self.store.put(key, data)
             except AlreadyExists:
-                if self.store.get(self._cp_key(run_id, step, kind)) != data:
+                if self.store.get(key) != data:
                     raise Conflict("a different checkpoint already exists for this step") from None
+                return                                                              # an idempotent re-upload costs nothing
+            if not known_step:
+                record.checkpoints += 1
+                self.repo.save(record)
 
     def _check_checkpoint_event(self, run_id: str, data: dict[str, Any]) -> None:
         step, sha = data.get("step"), data.get("state_sha256")

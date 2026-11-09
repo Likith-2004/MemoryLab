@@ -67,7 +67,7 @@ class PostgresRunRepository:
         return RunRecord(
             run_id=run_id, status=status,
             next_batch_no=dict(row["next_batch_no"] or {"worker": 1, "orchestrator": 1}),
-            event_count=events, bytes_total=row["bytes_total"] or 0, frames=row["frames"] or 0,
+            event_count=events, bytes_total=row["bytes_total"] or 0, frames=row["frames"] or 0, checkpoints=row["checkpoints"] or 0,
             tokens=row["tokens"], steps=row["steps"], score=row["score"] or 0,
             closed=bool(row["closed"]), manifest_sealed=bool(row["manifest_sealed"]),
             last_ack=dict(row["last_ack"] or {}), bundle_sha256=row["bundle_sha256"])
@@ -84,13 +84,13 @@ class PostgresRunRepository:
                  record.status not in (None, "queued", "starting"), final, final, record.status, record.run_id))
             conn.execute(
                 "insert into public.run_ingest_state (run_id, next_batch_no, event_count, bytes_total, frames, "
-                "score, closed, manifest_sealed, last_ack, bundle_sha256) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "checkpoints, score, closed, manifest_sealed, last_ack, bundle_sha256) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "on conflict (run_id) do update set next_batch_no = excluded.next_batch_no, "
                 "event_count = excluded.event_count, bytes_total = excluded.bytes_total, frames = excluded.frames, "
-                "score = excluded.score, closed = excluded.closed, manifest_sealed = excluded.manifest_sealed, "
+                "checkpoints = excluded.checkpoints, score = excluded.score, closed = excluded.closed, manifest_sealed = excluded.manifest_sealed, "
                 "last_ack = excluded.last_ack, bundle_sha256 = excluded.bundle_sha256",
                 (record.run_id, Jsonb(record.next_batch_no), record.event_count, record.bytes_total, record.frames,
-                 record.score, record.closed, record.manifest_sealed, Jsonb(record.last_ack), record.bundle_sha256))
+                 record.checkpoints, record.score, record.closed, record.manifest_sealed, Jsonb(record.last_ack), record.bundle_sha256))
 
     def add_index(self, run_id: str, entries: list[IndexEntry]) -> None:
         if not entries:

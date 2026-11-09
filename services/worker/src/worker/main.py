@@ -97,12 +97,15 @@ def _heartbeat(period: float, out: Callable[[dict[str, Any]], None], done: threa
 
 
 def _control(stdin: TextIO, stop: threading.Event) -> None:
-    for line in iter(lambda: stdin.readline(MAX_LINE), ""):
-        try:
-            if json.loads(line).get("cmd") == "stop":
-                stop.set()
-        except (ValueError, AttributeError):
-            continue  # ignore junk; never echo it
+    try:
+        for line in iter(lambda: stdin.readline(MAX_LINE), ""):
+            try:
+                if json.loads(line).get("cmd") == "stop":
+                    stop.set()
+            except (ValueError, AttributeError):
+                continue  # ignore junk; never echo it
+    except (ValueError, OSError):
+        return          # the stream was closed under us (the process is ending)
 
 
 def main(stdin: TextIO | None = None, stdout: TextIO | None = None, *, http_client: httpx.Client | None = None,
@@ -127,7 +130,8 @@ def main(stdin: TextIO | None = None, stdout: TextIO | None = None, *, http_clie
     del raw
     stop, done = threading.Event(), threading.Event()
     threading.Thread(target=_control, args=(stdin, stop), daemon=True).start()
-    threading.Thread(target=_heartbeat, args=(job.heartbeat_s, out, done), daemon=True).start()
+    beat = threading.Thread(target=_heartbeat, args=(job.heartbeat_s, out, done), daemon=True)
+    beat.start()
     try:
         summary = run_job(job, stop=stop, out=out, http_client=http_client, games_dir=games_dir)
     except (IngestRejected, IngestUnavailable) as exc:
@@ -138,6 +142,7 @@ def main(stdin: TextIO | None = None, stdout: TextIO | None = None, *, http_clie
         return 1
     finally:
         done.set()
+        beat.join(timeout=5)     # no heartbeat may be mid-write when the caller closes stdout (it raised "I/O operation on closed file")
     out({"done": summary})
     return 0
 

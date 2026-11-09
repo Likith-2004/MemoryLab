@@ -4,6 +4,12 @@ Format per milestone: scope, changes, tests/evidence, deviations, tag.
 
 ## M8: sessions, dream and resume (on branch `m7-web`)
 
+### M8 review fixes 1-3
+
+- Per-run checkpoint quota: migration 20261108000019 (`run_ingest_state.checkpoints`), `Limits.max_checkpoints_per_run=200`, counted per distinct step at upload time (orphans count, an idempotent re-upload is free, a different blob for the same step is still a 409), 429 `quota_exceeded` beyond it.
+- API fork end to end (`services/api/tests/test_fork_e2e.py`, 3 tests): public fork through API, orchestrator, worker and ingest; private is a 404 and creates nothing; an invisible run's checkpoint is unusable.
+- Worker: `_control` tolerates a closed stdin and `main` joins the heartbeat thread, which removes the "I/O operation on closed file" warning; unraisable/thread exceptions are errors in the orchestrator and worker suites.
+
 - labharness: `session_len` boundaries (context dropped, emulator and memory kept, capped inject file only), the dream job (own token cap counted in the run total, memory tools only, `dream.*` events with diffs), checkpoints at boundaries and every `checkpoint_every` steps with the model context stored, and resume. runlog/ingest: dream rows are memory mutations; `dream_ops` apart from `memory_ops`.
 - Checkpoints in ingest (state + context blobs, `checkpoints` rows) and the worker/orchestrator resume path: B-6 closed, forking on by default. Web: dream changes before/after side by side in the memory panel, dream events in the log; CLI: `memorylab runs dream`.
 - Tests: labharness +22 (sessions), runlog +6, ingest +17, orchestrator +5 (incl. 1 Docker fork test with two real sandboxes), web +11 vitest and 2 Playwright, CLI +2.
